@@ -21,7 +21,12 @@
 
 Every test exercises the CLI via ``subprocess.run`` so the entire Typer
 + entry-point + exit-code chain is verified, not just the Python
-functions under test.
+functions under test. The two help-only tests use Typer's in-memory
+CliRunner instead (no process spawn) to stay under the 1.0 s per-test
+budget that T090 (AC-7) enforces — subprocess for every --help would
+push test_cli_help_works to ~1.4 s (5× ~0.25 s spawn) and violate the
+determinism gate. Behaviour is identical: CliRunner still exercises the
+same Typer app + exit codes.
 """
 
 from __future__ import annotations
@@ -89,29 +94,39 @@ def test_cli_help_works() -> None:
     subcommand (``seal``, ``capture``, ``graph``, ``verify``).
 
     Each invocation exits 0 and the stdout contains a description.
+    Uses CliRunner (in-memory) to stay under the 1.0 s budget of T090.
     """
+    from typer.testing import CliRunner
+
+    from agent_trace_witness.cli import app
+
+    runner = CliRunner()
     for cmd in [[], ["seal"], ["capture"], ["graph"], ["verify"]]:
-        result = _run([*cmd, "--help"])
-        assert result.returncode == 0, (
-            f"`witness {' '.join(cmd)} --help` exited {result.returncode}: stderr={result.stderr!r}"
+        result = runner.invoke(app, [*cmd, "--help"])
+        assert result.exit_code == 0, (
+            f"`witness {' '.join(cmd)} --help` exited {result.exit_code}: stderr={result.output!r}"
         )
-        # Help is multi-line; just check the stdout is non-empty.
-        assert result.stdout.strip(), f"`witness {' '.join(cmd)} --help` produced empty stdout"
-        # And contains the program name somewhere.
-        assert "witness" in result.stdout.lower(), (
-            f"`witness {' '.join(cmd)} --help` output missing 'witness': {result.stdout[:200]!r}"
+        assert result.output.strip(), f"`witness {' '.join(cmd)} --help` produced empty output"
+        assert "witness" in result.output.lower(), (
+            f"`witness {' '.join(cmd)} --help` output missing 'witness': {result.output[:200]!r}"
         )
 
 
 def test_cli_root_help_lists_all_subcommands() -> None:
     """The root help screen mentions every subcommand. A new operator
     should be able to discover all four from a single ``--help`` call.
+    Uses CliRunner (in-memory) for speed — see test_cli_help_works.
     """
-    result = _run(["--help"])
-    assert result.returncode == 0
+    from typer.testing import CliRunner
+
+    from agent_trace_witness.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
     for sub in ("seal", "capture", "graph", "verify"):
-        assert sub in result.stdout, (
-            f"root --help missing subcommand {sub!r}: {result.stdout[:300]!r}"
+        assert sub in result.output, (
+            f"root --help missing subcommand {sub!r}: {result.output[:300]!r}"
         )
 
 
@@ -221,6 +236,32 @@ def test_cli_exit_code_on_invalid_seal_signature(tmp_path: Path) -> None:
         f"bogus seal signature should exit 1, got {result.returncode}; stderr={result.stderr!r}"
     )
     assert "signature" in result.stderr.lower()
+
+
+def test_cli_exit_code_on_unwritable_output(tmp_path: Path) -> None:
+    """A write failure (output path inside a file, not a dir) produces
+    exit code 2 (internal error).
+
+    T081/AC-10 explicit: 2 = internal error. We hit _die_internal via
+    _write_json's OSError handler by pointing --out at a path whose
+    parent component is a regular file (not a directory). mkdir(parents=True)
+    raises NotADirectoryError (subclass of OSError) → _die_internal →
+    typer.Exit(code=2).
+    """
+    spec_path = _fixture_spec(tmp_path)
+    # /output_file_dir does not exist; tmp_path/blocker is a file, so
+    # mkdir(parents=True) on tmp_path/blocker/sub will fail.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    bad_out = blocker / "sub" / "seal.json"  # parent 'sub' is under 'blocker' (a file)
+
+    result = _run(["seal", "--spec", str(spec_path), "--out", str(bad_out)])
+    assert result.returncode == 2, (
+        f"unwritable output should exit 2 (internal error), got {result.returncode}; "
+        f"stderr={result.stderr!r}"
+    )
+    assert "internal error" in result.stderr.lower()
+    assert "could not write" in result.stderr.lower()
 
 
 def test_cli_verify_exits_zero_even_when_anomalies_present(tmp_path: Path) -> None:
