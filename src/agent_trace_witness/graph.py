@@ -139,8 +139,26 @@ def build_graph(events: list[CaptureEvent], seal: SealedSeal) -> dict:
 
     # Counters give stable, content-independent URIs (no RNG, no clock).
     counters = {kind: 0 for kind in CHOKE_POINT_EVENT_TYPES}
-    # Open tool_call activities (FIFO). A tool_response pops the most
-    # recent one to draw its ``prov:used`` arrow.
+    # Open tool_call activities paired LIFO with tool_responses.
+    #
+    # Each ``tool_call`` is pushed onto ``open_tool_calls``; each
+    # ``tool_response`` pops the MOST RECENTLY pushed open call
+    # (``list.pop()`` with no index pops from the end). This means
+    # the n-th tool_response in a sequence is paired with the n-th
+    # tool_call counting backwards from the current position.
+    #
+    # Example (events in this order):
+    #   tool_call_1, tool_call_2, tool_response_1, tool_response_2
+    # → response_1 pairs with call_2 (most recent open)
+    # → response_2 pairs with call_1 (next most recent open)
+    #
+    # Why LIFO and not FIFO?  See plan.md §Decisiones de diseño and
+    # tasks.md T052 ("la Activity previa") — the semantics chosen by
+    # the MVP are: a response is attributed to the immediately
+    # preceding open call, which matches the natural causal intuition
+    # for sequential MCP traces. Feature 002 will need to extend this
+    # if real MCP clients emit concurrent or nested calls (then an
+    # explicit ``call_id`` must replace positional pairing).
     open_tool_calls: list[str] = []
 
     for ev in events:

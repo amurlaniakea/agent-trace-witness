@@ -225,9 +225,14 @@ def test_prov_dm_relations_chain_across_multiple_calls(
     sealed: SealedSeal,
 ) -> None:
     """When multiple tool_call/tool_response pairs occur, each response
-    pairs with the MOST RECENT unmatched call (FIFO). This pins the
-    pairing semantics: a response always points to the most recent
-    open call, not the first one.
+    pairs with the MOST RECENTLY OPENED unmatched call (LIFO / stack
+    semantics). This pins the pairing semantics: a response always
+    points to the most recent open call, not the first one.
+
+    Example (4 events in order):
+        tool_call_1, tool_call_2, tool_response_1, tool_response_2
+    → response_1 pairs with call_2 (most recent open at that moment)
+    → response_2 pairs with call_1 (next most recent open)
     """
     events = run_capture(
         MockMCPClient(),
@@ -247,8 +252,10 @@ def test_prov_dm_relations_chain_across_multiple_calls(
     call_2 = "atw:activity/tool_call_2"
     assert call_1 in activities and call_2 in activities
 
-    # The first response (result_tool_response_1) should pair with call_2.
-    # The second response (result_tool_response_2) should pair with call_1.
+    # The first response (result_tool_response_1) should pair with
+    # call_2 (most recent open at the moment of the response).
+    # The second response (result_tool_response_2) should pair with
+    # call_1 (next most recent open).
     r1 = _find_node(by_type["Entity"], "entity/result_tool_response_1")
     r2 = _find_node(by_type["Entity"], "entity/result_tool_response_2")
     assert r1 is not None and r2 is not None
