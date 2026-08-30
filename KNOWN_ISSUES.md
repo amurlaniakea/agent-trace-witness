@@ -73,3 +73,27 @@ Mitigación hasta feature 004:
 
 Endurecimiento (raise por debajo de 32) pertenece a feature 004 junto con
 el resto de Q1.
+
+## §5 — Clave de test hardcodeada en fixtures (no es secreto, pero se declara)
+
+La suite usa una clave HMAC fija `0`×64 (32 bytes de ceros, hex) definida
+en `tests/conftest.py` (`_FIXED_KEY_HEX`) y un seal pre-firmado
+`tests/fixtures/seal_without_damaging_tool.json` firmado con esa misma clave
+(`witness-fixture-1`, signature `dc91ea10…`). Esto es **intencional y
+documentado** — no es un leak:
+
+- La clave de test NO es la clave de producción. Prod lee
+  `ATW_WITNESS_KEY` del entorno del operador; tests la sobreescriben vía
+  fixture `autouse` `witness_key` que setea `ATW_WITNESS_KEY=0…0` y
+  `ATW_WITNESS_TS=2026-08-30T14:33:00+00:00` para determinismo (AC-7).
+- El fixture `seal_without_damaging_tool.json` verifica end-to-end (su
+  `signature` pasa `verify_seal` con la test key) y se carga en
+  `test_external_validity.py` + `test_cli.py::test_cli_verify_*`.
+- Fuera de tests, el código hace `raise WitnessKeyError` si `ATW_WITNESS_KEY`
+  falta (sin default en prod). Ver `plan.md` §Q1 y `seal.py::sign_seal`.
+- `ATW_WITNESS_TS` congela timestamps de capture para que `pytest` sea
+  byte-idéntico entre runs (T090/T091); los tests de seal pasan
+  `created_at` explícito y no dependen de esa var.
+
+Si un escáner de secretos flaggea `0`×64 o `dc91ea10…`, es falso positivo
+de test — añadir excepción para `tests/` + `tests/fixtures/`.
