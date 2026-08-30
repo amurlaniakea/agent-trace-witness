@@ -41,24 +41,40 @@ import pytest
 # This value is NOT secret: it is the test key, never used outside pytest.
 _FIXED_KEY_HEX = "0" * 64
 
+# Frozen timestamp for AC-7 determinism. Every event/capture test reads
+# ATW_WITNESS_TS through capture._now_or_frozen_ts (and the same helper
+# in tests/fixtures/mcp_client.py) so the suite produces byte-identical
+# JSONL across runs. The seal tests pass ``created_at`` explicitly and
+# are not affected by this env var.
+_FIXED_TS = "2026-08-30T14:33:00+00:00"
+
 
 @pytest.fixture(autouse=True)
 def witness_key() -> Generator[None, None, None]:
     """Set ``ATW_WITNESS_KEY`` to a fixed test value for every test.
 
-    Saves the previous value (if any) and restores it on teardown so the
-    fixture is safe to run alongside other suites that may set the same
-    variable.
+    Also freezes ``ATW_WITNESS_TS`` so capture/event timestamps are
+    deterministic across the suite (AC-7).
+
+    Saves the previous values (if any) and restores them on teardown so
+    the fixture is safe to run alongside other suites that may set the
+    same variables.
     """
-    saved = os.environ.get("ATW_WITNESS_KEY")
+    saved_key = os.environ.get("ATW_WITNESS_KEY")
+    saved_ts = os.environ.get("ATW_WITNESS_TS")
     os.environ["ATW_WITNESS_KEY"] = _FIXED_KEY_HEX
+    os.environ["ATW_WITNESS_TS"] = _FIXED_TS
     try:
         yield
     finally:
-        if saved is None:
+        if saved_key is None:
             os.environ.pop("ATW_WITNESS_KEY", None)
         else:
-            os.environ["ATW_WITNESS_KEY"] = saved
+            os.environ["ATW_WITNESS_KEY"] = saved_key
+        if saved_ts is None:
+            os.environ.pop("ATW_WITNESS_TS", None)
+        else:
+            os.environ["ATW_WITNESS_TS"] = saved_ts
 
 
 @pytest.fixture
@@ -66,11 +82,15 @@ def no_witness_key() -> Generator[None, None, None]:
     """Temporarily unset ``ATW_WITNESS_KEY`` for the duration of one test.
 
     Used by ``T018`` to verify that ``sign_seal`` raises
-    ``WitnessKeyError`` when no key is provided.
+    ``WitnessKeyError`` when no key is provided. Also unsets
+    ``ATW_WITNESS_TS`` so tests that want fresh timestamps can opt in.
     """
-    saved = os.environ.pop("ATW_WITNESS_KEY", None)
+    saved_key = os.environ.pop("ATW_WITNESS_KEY", None)
+    saved_ts = os.environ.pop("ATW_WITNESS_TS", None)
     try:
         yield
     finally:
-        if saved is not None:
-            os.environ["ATW_WITNESS_KEY"] = saved
+        if saved_key is not None:
+            os.environ["ATW_WITNESS_KEY"] = saved_key
+        if saved_ts is not None:
+            os.environ["ATW_WITNESS_TS"] = saved_ts
