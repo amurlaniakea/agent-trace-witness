@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-trace-witness"
+version = "0.1.0"
+description = "External witness for autonomous multi-agent AI systems: signed readiness seal, choke-point capture, and PROV-DM causal graphs for post-incident reconstruction"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Pedro Sordo Martínez", email = "amurlaniakea@gmail.com" }]
+keywords = [
+    "ai-agents",
+    "agent-security",
+    "dfir",
+    "forensic-readiness",
+    "prov-dm",
+    "w3c-prov",
+    "mcp",
+    "attribution-laundering",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Dev-only deps. NO son dependencia de runtime: el CLI no las usa.
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/amurlaniakea/agent-trace-witness"
+Repository = "https://github.com/amurlaniakea/agent-trace-witness"
+Issues = "https://github.com/amurlaniakea/agent-trace-witness/issues"
+
+[project.scripts]
+witness = "agent_trace_witness.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "slow: marks tests that are statistically expensive (run with -m slow)",
+]
+
+[tool.coverage.run]
+source = ["agent_trace_witness"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 80
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = [
+    "E501",  # line-length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False en tests es OK
