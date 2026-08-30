@@ -1,0 +1,1 @@
+{"created_at": "2026-08-30T14:33:00+00:00", "system_prompt_sha256": "5fe1e632697818fba2b8c651b8a000607cdf4b1b35bceae914d5a855b3ad5a2b", "tools": [{"name": "read_file", "scopes": ["read:/data/**"]}, {"name": "list_dir", "scopes": ["read:/data/**"]}], "witness_id": "witness-fixture-1", "signature": "hmac-sha256:dc91ea105843ada26bedb76388116820c12ff4e81f276328ab20a691a182996a"}
