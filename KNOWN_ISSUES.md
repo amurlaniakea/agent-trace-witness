@@ -143,3 +143,24 @@ o tipo aparte para payloads hex.
 un efecto externo benigno no relacionado. No distingue "daño reaparece por
 otra vía" de "hay un efecto cualquiera". Declarado como proxy cualitativo
 sin scoring (C5); scoring numérico es 003+.
+
+## §7 — Stub de test para live stdio es autoría propia (003, C5)
+
+`tests/fixtures/stubs/mcp_stdio_stub.py` (003) y
+`src/agent_trace_witness/mcp_adapter.py::RealMCPClient.from_stdio()` son
+ambos autoría de Hermes, basados en su lectura de la spec
+`modelcontextprotocol.io/specification/2025-03-26/basic/transports` §stdio
+(newline-delimited JSON-RPC UTF-8, `\n` MUST NOT embebido). Si ambos
+comparten el mismo malentendido de un detalle del framing (correlación de
+`id` JSON-RPC en notificaciones vs requests, mensaje partido entre dos
+lecturas), AC-16 puede pasar en verde sin hablar con un servidor MCP
+conforme a spec — misma circularidad cazada con los fixtures HANSARD en
+AC-9, a nivel de protocolo.
+
+No se trae un servidor MCP de terceros a CI (rompería C4). Conformidad
+verificada contra la spec escrita, no contra un servidor MCP independiente.
+El stub no es implementación de referencia de terceros. Prueba manual de
+humo fuera de la suite automatizada contra un servidor MCP real instalable
+(`npx`/`uvx`, sin ser dependencia de CI) es opcional y valiosa para dar
+confianza real, pero no bloqueante para AC-16. Si esa prueba manual se
+hace, se documenta en `tests/fixtures/cassettes/README.md`.
