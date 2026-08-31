@@ -180,22 +180,33 @@ class Keyring:
     def rotate_key(self) -> KeyEntry:
         """Marca la active actual como inactive y genera una nueva active.
 
-        Preserva todas las entradas anteriores (no-revoked) para verify v1.
-        Si el timestamp del nuevo entry colisiona con un key_id existente
-        (rotación dentro del mismo segundo), reintenta hasta 3 veces. Esto
-        es necesario porque key_id es timestamp a segundos (no UUID) — la
-        colisión rompería la unicidad que add_key exige.
+        **Atómico:** la desactivación de la clave vieja y la promoción de
+        la nueva ocurren como un solo paso al final, DESPUÉS de confirmar
+        que la nueva se generó con key_id único. Si los reintentos se
+        agotan, NINGUNA mutación ocurre — el keyring queda exactamente
+        como estaba. Esto es el invariante que el test
+        ``test_rotate_failure_is_atomic`` verifica: una rotación fallida
+        no debe dejar el sistema sin claves activas.
+
+        Preserva todas las entradas anteriores (no-revoked) para verify
+        v1. El retry cubre el caso residual de colisión de timestamp a
+        microsegundos (extremadamente raro: necesitaría dos llamadas a
+        ``datetime.now(UTC)`` en el mismo microsegundo).
         """
         active = self.active_key()
-        object.__setattr__(active, "active", False)
         for _ in range(3):
             new_entry = KeyEntry.from_generated()
             if not any(k.key_id == new_entry.key_id for k in self.keys):
+                # Atomic transition: old -> inactive, new -> in keys.
+                # Sólo llegamos aquí si la nueva es válida y única.
+                object.__setattr__(active, "active", False)
                 self.keys.append(new_entry)
                 return new_entry
+        # 3 reintentos agotados: NO mutamos el keyring. El operador
+        # conserva la clave activa que tenía.
         raise RuntimeError(
             "Could not generate a unique key_id after 3 attempts "
-            "(timestamp collision within same second)"
+            "(timestamp collision within same microsecond)"
         )
 
     def revoke_key(self, key_id: str) -> None:

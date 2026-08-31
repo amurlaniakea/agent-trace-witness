@@ -187,15 +187,24 @@ class TestRotateAndRevoke:
         assert kr.active_key() is third
         assert len(kr.keys) == 3
 
-    def test_rotate_never_duplicates_key_id(self) -> None:
-        """T043-1-fix: rotate_key nunca produce key_id duplicado en la lista.
+    def test_rotate_failure_is_atomic(self) -> None:
+        """T043-1-fix: una rotación fallida deja el keyring INALTERADO.
 
-        El smoke test del CLI descubrió que append directo colisionaba
-        (dos rotaciones en el mismo segundo). Este test fuerza el escenario
-        peor: monkeypatcha _utc_timestamp para devolver SIEMPRE el mismo
-        timestamp (el de e1), garantizando colisión en todos los reintentos.
-        Con el retry de 3 intentos agotado, rotate_key debe lanzar
-        RuntimeError — NUNCA appendear un key_id duplicado.
+        Bug cazado en revisión de T042: el test anterior
+        (test_rotate_never_duplicates_key_id) verificaba ``e1.active is
+        False`` tras el fallo, lo que CODIFICABA el bug como correcto.
+        El bug real: rotate_key desactivaba la clave vieja ANTES de
+        generar la nueva, así que si los 3 reintentos colisionan, el
+        keyring queda sin activas (active_key() -> AssertionError) y
+        el witness no puede firmar.
+
+        El invariante correcto: rotación fallida = keyring exactamente
+        como estaba. Este test lo verifica forzando colisión garantizada
+        (monkeypatch de _utc_timestamp que siempre devuelve el key_id de
+        e1) y asintiendo que tras el RuntimeError:
+        - len(kr.keys) == 1 (no se añadió nueva)
+        - e1.active is True (NO se desactivó)
+        - active_key() devuelve e1 (no AssertionError de 0 activas)
         """
         import agent_trace_witness.keyring as kr_mod
         from agent_trace_witness.keyring import _utc_timestamp as orig_ts
@@ -212,9 +221,10 @@ class TestRotateAndRevoke:
         finally:
             kr_mod._utc_timestamp = orig_ts  # noqa: E731
 
-        # The keyring must be unchanged: old key inactive, no new entry.
+        # Atomic invariant: keyring unchanged after a failed rotation.
         assert len(kr.keys) == 1
-        assert e1.active is False
+        assert e1.active is True
+        assert kr.active_key() is e1  # no AssertionError, keyring usable
 
     def test_revoked_key_excluded(self) -> None:
         """T043-2: revoked_at excluye de verification_keys()."""
