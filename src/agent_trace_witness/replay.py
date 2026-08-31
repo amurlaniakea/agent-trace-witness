@@ -94,10 +94,11 @@ def replay(
     - Si ``counterfactual.remove`` no existe en ``@graph`` como
       ``prov:Activity``, retorna ``not_replayable=[remove]`` y
       ``compensation_set`` = grafo original (sin inventar).
-    - En caso contrario, excluye la Activity + todo nodo con
-      ``prov:wasGeneratedBy == remove`` o ``prov:used == remove``
-      (args, result, external_effect directos). No hace transitividad
-      profunda (grafo pequeño HANSARD, R13) — suficiente para AC-12.
+    - En caso contrario, excluye la Activity + cierre transitivo sobre
+      ``prov:wasGeneratedBy`` / ``prov:used`` / ``prov:wasDerivedFrom``
+      (args, result, external_effect y cualquier Activity/Entity que
+      transitivamente use lo eliminado). Necesario para HANSARD laundering
+      donde un acto se dispersa en cadena.
 
     ``seal`` es opcional en 002 (validación seal-constrained queda para
     verify.py si se integra); si se pasa y no es ``SealedSeal``, se
@@ -143,18 +144,44 @@ def replay(
 
     remove_id = cf.remove
 
-    def _is_removed(n: dict[str, Any]) -> bool:
-        if n.get("@id") == remove_id:
-            return True
-        was = n.get("prov:wasGeneratedBy")
-        if isinstance(was, dict) and was.get("@id") == remove_id:
-            return True
-        used = n.get("prov:used")
-        if isinstance(used, dict) and used.get("@id") == remove_id:
-            return True
-        return False
+    # Cierre transitivo (mecanismo 4): no solo vecinos directos.
+    # HANSARD laundering dispersa un acto en cadena (tool_call_1 -> result_1
+    # -> tool_call_2 -> ...). Si solo se podan vecinos directos, el
+    # contrafactual responde "que colgaba de este nodo" en vez de
+    # "que habria pasado sin este tool_call". BFS sobre wasGeneratedBy /
+    # used / wasDerivedFrom cubre Activity->Entity y Entity->Activity.
+    def _edge_targets(val: Any) -> list[str]:
+        if isinstance(val, dict) and "@id" in val:
+            return [val["@id"]]
+        if isinstance(val, list):
+            return [v["@id"] for v in val if isinstance(v, dict) and "@id" in v]
+        return []
 
-    kept = [n for n in nodes if not _is_removed(n)]
+    removed: set[str] = {remove_id}
+    queue: list[str] = [remove_id]
+    # Mapa id -> nodo para verificar existencia; no se usa para filtrar
+    # sino para expandir el cierre
+    while queue:
+        cur = queue.pop(0)
+        for n in nodes:
+            nid = n.get("@id")
+            if nid in removed:
+                continue
+            edge_ids: list[str] = []
+            for k in ("prov:wasGeneratedBy", "prov:used", "prov:wasDerivedFrom"):
+                if k in n:
+                    edge_ids.extend(_edge_targets(n[k]))
+            # Si alguna arista apunta a un nodo ya eliminado, este nodo
+            # tambien se elimina (transitivo). Esto cubre:
+            # Activity_1 -> Entity_result_1 (used) -> Activity_2 (used) -> Entity_args_2 (wasGeneratedBy) ...
+            if any(eid in removed for eid in edge_ids):
+                removed.add(nid)
+                queue.append(nid)
+            # Caso especial: el cur es Entity y n es Activity que lo usa
+            # ya esta cubierto por el check anterior (used apunta a Entity)
+            _ = cur  # evita lint unused
+
+    kept = [n for n in nodes if n.get("@id") not in removed]
 
     # synergy_residual booleano: true si queda algún externalEffect tras la poda
     residual = any(n.get("atw:externalEffect") is True for n in kept if isinstance(n, dict))
