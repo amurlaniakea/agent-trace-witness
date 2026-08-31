@@ -25,6 +25,7 @@ Subcommands (B5 of the plan):
 - ``capture``: record events at the 4 choke points from a scenario file.
 - ``graph``:   emit a PROV-DM JSON-LD causal graph from captured events.
 - ``verify``:  check a graph against a seal and report anomalies.
+- ``replay``:  counterfactual replay over a graph (mecanismo 4 HANSARD).
 
 Exit codes (T081):
   0  success (including verify when anomalies are present).
@@ -56,6 +57,8 @@ from .capture import (
 )
 from .exceptions import WitnessError
 from .graph import build_graph, graph_to_jsonld
+from .replay import Counterfactual, replay_to_json
+from .replay import replay as replay_engine
 from .seal import (
     AgentSpec,
     Tool,
@@ -433,6 +436,119 @@ def graph(
         _die_internal(f"could not write {out_path}: {exc}")
 
     typer.echo(f"witness: wrote graph ({len(g.get('@graph', []))} nodes) to {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# replay (T040 — AC-15)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def replay(
+    graph_path: str = typer.Option(..., "--graph", help="Path to the PROV-DM graph (JSON-LD)."),
+    seal_path: str = typer.Option(..., "--seal", help="Path to the signed seal."),
+    counterfactual: str = typer.Option(
+        ...,
+        "--counterfactual",
+        help='Counterfactual JSON string or path to JSON file, e.g. \'{"remove":"atw:activity/tool_call_1"}\' (URI acoplado a graph.py §Decisión B4 — ver KNOWN_ISSUES §6 y plan.md).',
+    ),
+    out: str = typer.Option(..., "--out", help="Path to write replay result JSON."),
+) -> None:
+    """Replay contrafactual sobre un grafo PROV-DM (mecanismo 4 HANSARD).
+
+    Lee el grafo y el seal, aplica el counterfactual (solo \'remove\' URI
+    acoplado a graph.py en 002 — ver plan.md §Decisión abierta resuelta en
+    B4: se mantiene URI atw:activity/... como interfaz pública en 002 por
+    estabilidad de IDs deterministas; payload_sha256/event_index quedan para
+    003+), y escribe JSON canónico con compensation_set + synergy_residual
+    + not_replayable. Exit 0 ok, 1 input error, 2 internal I/O error.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    g_file = _Path(graph_path)
+    s_file = _Path(seal_path)
+    out_path = _Path(out)
+
+    # Seal primero (input error si no verifica)
+    seal_raw = _read_json(s_file, what="seal")
+    try:
+        from .seal import seal_from_dict, verify_seal
+
+        sealed = seal_from_dict(seal_raw)
+    except Exception as exc:
+        _die_input(f"seal {s_file} is malformed: {exc}")
+    # verify_seal returns bool; False -> input error
+    try:
+        if not verify_seal(sealed):
+            _die_input(f"seal {s_file} signature did not verify")
+    except Exception as exc:
+        _die_input(f"seal {s_file} signature did not verify: {exc}")
+
+    graph_raw = _read_json(g_file, what="graph")
+    if "@graph" not in graph_raw or not isinstance(graph_raw.get("@graph"), list):
+        _die_input(f"graph {g_file} is not a PROV-DM JSON-LD doc (missing or malformed @graph)")
+
+    # Counterfactual: file path or inline JSON string
+    cf_raw: dict
+    cf_path = _Path(counterfactual)
+    # Si es fichero existente y contiene JSON, leer fichero; si no, parsear string inline
+    if cf_path.exists() and cf_path.is_file():
+        cf_raw = _read_json(cf_path, what="counterfactual")
+    else:
+        try:
+            cf_raw = _json.loads(counterfactual)
+        except _json.JSONDecodeError as exc:
+            _die_input(f"counterfactual is not valid JSON: {exc}")
+        if not isinstance(cf_raw, dict):
+            _die_input(
+                f"counterfactual must be a JSON object with 'remove', got {type(cf_raw).__name__}"
+            )
+
+    # Validación temprana de forma (C5)
+    if "remove" not in cf_raw or not isinstance(cf_raw["remove"], str) or not cf_raw["remove"]:
+        _die_input(
+            "counterfactual must contain non-empty string field 'remove' (e.g. 'atw:activity/tool_call_1')"
+        )
+
+    # Ejecutar replay
+    try:
+        from .exceptions import WitnessReplayError
+
+        cf = Counterfactual(remove=cf_raw["remove"])
+        result = replay_engine(graph_raw, cf, sealed)
+    except WitnessReplayError as exc:
+        _die_input(f"replay rejected counterfactual: {exc}")
+    except Exception as exc:
+        # No clasificado -> internal
+        _die_internal(f"replay failed: {exc}")
+
+    # Serializar resultado canónico
+    try:
+        text = replay_to_json(result)
+        payload = _json.loads(text)
+    except Exception as exc:
+        _die_internal(f"could not serialise replay result: {exc}")
+
+    # Escribir out (I/O -> exit 2)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            _json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _die_internal(f"could not write {out_path}: {exc}")
+
+    # not_replayable -> input error (C5) pero con fichero ya escrito
+    if result.not_replayable:
+        typer.echo(
+            f"witness replay: not_replayable: {result.not_replayable} (written to {out_path})",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"witness replay: wrote {out_path} (synergy_residual={result.synergy_residual})")
 
 
 # ---------------------------------------------------------------------------
