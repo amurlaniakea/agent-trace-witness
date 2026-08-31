@@ -24,7 +24,7 @@ import os
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
 ALGORITHM_HMAC = "hmac"
 _ALGORITHMS = (ALGORITHM_HMAC,)
@@ -49,7 +49,7 @@ class KeyEntry:
     """
 
     key_id: str
-    algorithm: Annotated[str, Literal["hmac"]]
+    algorithm: Literal["hmac"]
     secret: str  # 64 hex chars
     created_at: str
     active: bool = False
@@ -181,12 +181,22 @@ class Keyring:
         """Marca la active actual como inactive y genera una nueva active.
 
         Preserva todas las entradas anteriores (no-revoked) para verify v1.
+        Si el timestamp del nuevo entry colisiona con un key_id existente
+        (rotación dentro del mismo segundo), reintenta hasta 3 veces. Esto
+        es necesario porque key_id es timestamp a segundos (no UUID) — la
+        colisión rompería la unicidad que add_key exige.
         """
         active = self.active_key()
         object.__setattr__(active, "active", False)
-        new_entry = KeyEntry.from_generated()
-        self.keys.append(new_entry)
-        return new_entry
+        for _ in range(3):
+            new_entry = KeyEntry.from_generated()
+            if not any(k.key_id == new_entry.key_id for k in self.keys):
+                self.keys.append(new_entry)
+                return new_entry
+        raise RuntimeError(
+            "Could not generate a unique key_id after 3 attempts "
+            "(timestamp collision within same second)"
+        )
 
     def revoke_key(self, key_id: str) -> None:
         """Revoca (no elimina) una key: set revoked_at."""
@@ -204,8 +214,15 @@ class Keyring:
 
 
 def _utc_timestamp() -> str:
-    """ISO-8601 UTC con precisión a segundos (para estabilidad en tests)."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """ISO-8601 UTC con microsegundos.
+
+    Microsegundos (no segundos) porque key_id debe ser único incluso
+    cuando dos claves se generan dentro del mismo segundo — el smoke
+    test del CLI (T042) cazó que dos rotate_key() en <1s colisionaban
+    y el retry de rotate_key agotaba sus 3 intentos. Con precisión de
+    microsegundos la colisión es improbable y el retry queda como red.
+    """
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def keygen(algorithm: str = ALGORITHM_HMAC) -> KeyEntry:

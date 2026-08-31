@@ -58,6 +58,7 @@ from .capture import (
 )
 from .exceptions import WitnessError
 from .graph import build_graph, graph_to_jsonld
+from .keyring import _ALGORITHMS, Keyring, keygen
 from .replay import Counterfactual, replay_to_json
 from .replay import replay as replay_engine
 from .seal import (
@@ -628,6 +629,92 @@ def verify(
                 typer.echo(f"  [{a.severity.upper():7}] {a.tool}: {a.detail}")
 
     # Exit 0 even when anomalies are present (per T085).
+
+
+# ---------------------------------------------------------------------------
+# key (T042 — Q1 key management CLI, feature 004)
+# ---------------------------------------------------------------------------
+
+
+# Typer.Option extracted to module-level defaults (B008).
+_KEYRING_OPT = typer.Option(Path("keys.json"), "--out", "-o", help="Path to the keyring JSON file.")
+_ALGORITHM_OPT = typer.Option(
+    "hmac",
+    "--algorithm",
+    "-a",
+    help="Key algorithm. Default is hmac (explicit, not implicit). "
+    "Use 'ed25519' only in feature 005.",
+)
+
+
+@app.command(name="keygen")
+def keygen_cmd(
+    algorithm: str = _ALGORITHM_OPT,
+    out: Path = _KEYRING_OPT,
+) -> None:
+    """Generate a new HMAC key and register it in the keyring file.
+
+    The keyring is a JSON file at --out (default keys.json, gitignored).
+    Only one key may be active at a time; if an existing active key is
+    present, keygen still registers a new one — rotate --active to set
+    which key signs.
+
+    Example::
+
+        witness keygen --algorithm hmac -o keys.json
+    """
+    if algorithm not in _ALGORITHMS:
+        _die_input(f"algorithm {algorithm!r} is feature 005, not implemented in 004")
+    kr = Keyring.load(out)
+    entry = keygen(algorithm=algorithm)
+    try:
+        kr.add_key(entry)
+    except ValueError:
+        _die_input(f"key_id {entry.key_id!r} already in {out}")
+    kr.save(out)
+    typer.echo(f"witness: generated key_id={entry.key_id} algorithm={entry.algorithm} -> {out}")
+
+
+@app.command(name="rotate-key")
+def rotate_key_cmd(
+    out: Path = _KEYRING_OPT,
+) -> None:
+    """Rotate the active key: old key becomes inactive, new one becomes active."""
+    kr = Keyring.load(out)
+    if kr.is_empty():
+        _die_input(f"keyring empty; run 'witness keygen' first ({out})")
+    new = kr.rotate_key()
+    kr.save(out)
+    typer.echo(f"witness: rotated. New active key_id={new.key_id} -> {out}")
+
+
+@app.command(name="revoke-key")
+def revoke_key_cmd(
+    key_id: str = typer.Argument(..., help="key_id to revoke."),
+    out: Path = _KEYRING_OPT,
+) -> None:
+    """Revoke (do not delete) a key by key_id — it will not verify."""
+    kr = Keyring.load(out)
+    if not kr.get_key(key_id):
+        # Either truly missing, or already revoked (get_key excludes revoked).
+        _die_input(f"key_id {key_id!r} not found or already revoked in {out}")
+    kr.revoke_key(key_id)
+    kr.save(out)
+    typer.echo(f"witness: revoked key_id={key_id} -> {out}")
+
+
+@app.command(name="list-keys")
+def list_keys_cmd(
+    out: Path = _KEYRING_OPT,
+) -> None:
+    """List all keys in the keyring (key_id, algorithm, active, revoked)."""
+    kr = Keyring.load(out)
+    if kr.is_empty():
+        typer.echo(f"witness: keyring {out} is empty")
+        return
+    for k in kr.keys:
+        state = "REVOKED" if k.revoked_at else ("active" if k.active else "inactive")
+        typer.echo(f"  {k.key_id}  {k.algorithm}  {state}")
 
 
 if __name__ == "__main__":

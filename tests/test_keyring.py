@@ -187,6 +187,35 @@ class TestRotateAndRevoke:
         assert kr.active_key() is third
         assert len(kr.keys) == 3
 
+    def test_rotate_never_duplicates_key_id(self) -> None:
+        """T043-1-fix: rotate_key nunca produce key_id duplicado en la lista.
+
+        El smoke test del CLI descubrió que append directo colisionaba
+        (dos rotaciones en el mismo segundo). Este test fuerza el escenario
+        peor: monkeypatcha _utc_timestamp para devolver SIEMPRE el mismo
+        timestamp (el de e1), garantizando colisión en todos los reintentos.
+        Con el retry de 3 intentos agotado, rotate_key debe lanzar
+        RuntimeError — NUNCA appendear un key_id duplicado.
+        """
+        import agent_trace_witness.keyring as kr_mod
+        from agent_trace_witness.keyring import _utc_timestamp as orig_ts
+
+        kr = Keyring()
+        e1 = keygen()
+        kr.add_key(e1)
+
+        # Force ALL new timestamps to equal e1's (guaranteed collision).
+        kr_mod._utc_timestamp = lambda: e1.key_id  # type: ignore[assignment]
+        try:
+            with pytest.raises(RuntimeError, match="unique key_id"):
+                kr.rotate_key()
+        finally:
+            kr_mod._utc_timestamp = orig_ts  # noqa: E731
+
+        # The keyring must be unchanged: old key inactive, no new entry.
+        assert len(kr.keys) == 1
+        assert e1.active is False
+
     def test_revoked_key_excluded(self) -> None:
         """T043-2: revoked_at excluye de verification_keys()."""
         kr = Keyring()
