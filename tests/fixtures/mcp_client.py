@@ -20,20 +20,20 @@
 """Mock MCP client fixture for agent-trace-witness tests (T030).
 
 Implements the ``MCPClient`` protocol defined in
-``agent_trace_witness.capture`` and emits the four choke-point event types
+``agent_trace_witness.capture`` and emits the five choke-point event types
 that the witness must capture (per HANSARD §5, mechanisms 1+2+3 of this
 spec capture 4 of the 5 choke points; the 5th — external effect — is
-feature 002).
+feature 002, B1-capture).
 
 CONTRACT for a real MCP client (feature 002 will replace this mock)
 ====================================================================
 
 A real client must satisfy ``agent_trace_witness.capture.MCPClient``
-(``typing.Protocol``). The four methods below are the minimal API the
+(``typing.Protocol``). The five methods below are the minimal API the
 witness needs. Anything beyond them is the client's concern, not the
 witness's.
 
-The four methods are stateless from the witness's point of view: each
+The five methods are stateless from the witness's point of view: each
 call returns a fresh ``EventTuple`` and appends it to the client's
 event log. The witness does NOT depend on the client maintaining state
 between calls.
@@ -115,6 +115,10 @@ class MCPClient(Protocol):
         self, content: bytes | str | dict, *, ts: str | None = None
     ) -> EventTuple: ...
 
+    def record_external_effect(
+        self, tool: str, effect: bytes | str | dict, *, ts: str | None = None
+    ) -> EventTuple: ...
+
     def events(self) -> Iterable[EventTuple]:
         """Read-only view of every event the client has emitted, in order.
 
@@ -183,6 +187,15 @@ class MockMCPClient:
         self._events.append(ev)
         return ev
 
+    def record_external_effect(
+        self, tool: str, effect: bytes | str | dict, *, ts: str | None = None
+    ) -> EventTuple:
+        ts = _now_or_frozen_ts(ts)
+        payload = _pack_external_effect_payload(tool=tool, effect=effect)
+        ev = EventTuple(timestamp=ts, type="external_effect", payload=payload)
+        self._events.append(ev)
+        return ev
+
     def events(self) -> list[EventTuple]:
         """Return a copy of the event log (defensive: prevents test
         code from mutating the internal list).
@@ -220,6 +233,15 @@ def _pack_model_payload(*, role: str, content: bytes | str | dict) -> bytes:
     """Pack a model event payload (model_input / model_output)."""
     return json.dumps(
         {"role": role, "content": _coerce(content)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _pack_external_effect_payload(*, tool: str, effect: bytes | str | dict) -> bytes:
+    """Pack an external_effect event payload (5th choke point, B1)."""
+    return json.dumps(
+        {"tool": tool, "effect": _coerce(effect)},
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")

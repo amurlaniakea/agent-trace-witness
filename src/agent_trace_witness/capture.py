@@ -17,9 +17,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Witness capture: choke-point event recording (T031-T036).
+"""Witness capture: choke-point event recording (T031-T036, T011-T012).
 
-The capture layer records events at the four choke points the witness is
+The capture layer records events at the five choke points the witness is
 allowed to observe (per C1, this module imports MCP-client abstractions
 only — it does NOT import or instrument agent code):
 
@@ -27,9 +27,9 @@ only — it does NOT import or instrument agent code):
 - (b) tool_response — incoming response from the MCP server
 - (c) model_input  — message to the model
 - (d) model_output — message from the model
-
-The 5th choke point (external effect, e.g. file write) is OUT OF SCOPE
-for this MVP — see ``KNOWN_ISSUES.md §1`` and feature 002.
+- (e) external_effect — side-effect of a tool (file write, network
+  request) observed via MCP response inspection / optional FS hook
+  (feature 002, AC-11). 001 deferred this; 002 implements it.
 
 Determinism (AC-7): no RNG, no wall clock unless ``ATW_WITNESS_TS`` is
 unset (tests set it via ``conftest.py`` so the suite is fully frozen).
@@ -58,6 +58,7 @@ __all__ = [
     "MCPClient",
     "compute_payload_hash",
     "compute_seal_ref",
+    "record_external_effect",
     "record_model_input",
     "record_model_output",
     "record_tool_call",
@@ -68,16 +69,23 @@ __all__ = [
 # Name of the env var that freezes timestamps across the suite (AC-7).
 WITNESS_TS_ENV = "ATW_WITNESS_TS"
 
-# Frozen tuple of the four event types. Mirrors tests/fixtures/mcp_client.py
-# so production code and the fixture cannot drift silently.
+# Frozen tuple of the five event types (feature 002 adds external_effect).
+# Mirrors tests/fixtures/mcp_client.py so production code and the fixture
+# cannot drift silently. T011 decision: Option A — external_effect is a
+# distinct type (not a subtipo of tool_response) so the 5 choke points
+# stay explicit (a-e) and graph.py can emit a dedicated atw:externalEffect
+# node without inferring it from tool_response. Trade-off: callers that
+# only inspect tool_response now also need to handle external_effect;
+# documented here and in graph.py.
 CHOKE_POINT_EVENT_TYPES: tuple[str, ...] = (
     "tool_call",
     "tool_response",
     "model_input",
     "model_output",
+    "external_effect",
 )
 
-EventType = Literal["tool_call", "tool_response", "model_input", "model_output"]
+EventType = Literal["tool_call", "tool_response", "model_input", "model_output", "external_effect"]
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +119,13 @@ class EventTuple:
 class MCPClient(Protocol):
     """Minimal contract every MCP client (mock or real) must satisfy.
 
-    The four record_* methods return an ``EventTuple`` so the caller
+    The five record_* methods return an ``EventTuple`` so the caller
     (the mock's own log, a real client's stream) can keep its own
     bookkeeping; the witness does not inspect the return value — it
     builds ``CaptureEvent`` from its own arguments. This keeps the
     witness's view independent of the client's state.
+
+    Feature 002 adds ``record_external_effect`` for the 5th choke point.
     """
 
     def record_tool_call(
@@ -132,6 +142,10 @@ class MCPClient(Protocol):
 
     def record_model_output(
         self, content: bytes | str | dict, *, ts: str | None = None
+    ) -> EventTuple: ...
+
+    def record_external_effect(
+        self, tool: str, effect: bytes | str | dict, *, ts: str | None = None
     ) -> EventTuple: ...
 
     def events(self) -> Iterable[EventTuple]: ...
@@ -276,7 +290,7 @@ def _make_event(
         raise WitnessCaptureError(
             f"event type must be one of {CHOKE_POINT_EVENT_TYPES}, got {type_!r}"
         )
-    if (type_ in ("tool_call", "tool_response")) and (tool is None):
+    if (type_ in ("tool_call", "tool_response", "external_effect")) and (tool is None):
         raise WitnessCaptureError(f"event type {type_!r} requires a non-None tool")
     if (type_ in ("model_input", "model_output")) and (role is None):
         raise WitnessCaptureError(f"event type {type_!r} requires a non-None role")
@@ -397,6 +411,49 @@ def record_model_output(
     )
 
 
+def record_external_effect(
+    client: MCPClient,
+    tool: str,
+    effect: bytes | str | dict,
+    seal_ref: str,
+    seal: SealedSeal,
+    *,
+    ts: str | None = None,
+) -> CaptureEvent:
+    """Record an ``external_effect`` event (T012, 5th choke point).
+
+    ``effect`` is the side-effect description (e.g. ``{"path": "/tmp/x",
+    "op": "delete"}``). Like the other record_* helpers, the payload is
+    hashed (never embedded) and ``unsealed`` is computed from ``seal``.
+    The client is notified via ``record_external_effect`` so a real
+    adapter or mock can keep its own log.
+    """
+    # Notify client — keep parity with the other record_* helpers.
+    # The mock's generic _coerce mirrors _coerce_to_obj, so we pass the
+    # coerced form.
+    try:
+        client.record_external_effect(  # type: ignore[attr-defined]
+            tool=tool, effect=_coerce_to_obj(effect), ts=_now_or_frozen_ts(ts)
+        )
+    except AttributeError:
+        # Fallback for clients (e.g. older mocks) that do not yet expose
+        # record_external_effect — keep witness's own event even if the
+        # client's log cannot record it. This preserves backward compat
+        # while AC-4's grep still requires the Protocol to be satisfied
+        # for new code (mcp_adapter.py).
+        pass
+    payload_bytes = _canonical_bytes({"tool": tool, "effect": _coerce_to_obj(effect)})
+    return _make_event(
+        type_="external_effect",
+        tool=tool,
+        role=None,
+        payload_bytes=payload_bytes,
+        seal_ref=seal_ref,
+        authorised=_authorised_tools(seal),
+        ts=ts,
+    )
+
+
 # ---------------------------------------------------------------------------
 # run_capture (T036)
 # ---------------------------------------------------------------------------
@@ -465,6 +522,9 @@ def run_capture(
             elif kind == "model_output":
                 kwargs = {"ts": None, "role": role or "assistant"}
                 ev = record_model_output(client, payload, seal_ref, seal, **kwargs)
+            elif kind == "external_effect":
+                ts_override = extra.get("ts")
+                ev = record_external_effect(client, tool, payload, seal_ref, seal, ts=ts_override)
             else:
                 raise WitnessCaptureError(f"unknown scenario kind: {kind!r}")
 

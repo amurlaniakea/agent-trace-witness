@@ -62,3 +62,14 @@ class WitnessGraphError(WitnessError, ValueError):
     because the seal itself may be intact while the graph built from it is
     inconsistent.
     """
+
+
+class WitnessReplayError(WitnessError, ValueError):
+    """The replay engine could not produce a counterfactual result (T010).
+
+    Covers a ``counterfactual`` that references an unknown Activity ID,
+    a graph that is not a valid PROV-DM JSON-LD doc, or a compensation
+    set that cannot be computed deterministically. Distinct from
+    ``WitnessGraphError`` because the graph itself may be valid while
+    the requested counterfactual is not replayable (C5: ``not_replayable``).
+    """

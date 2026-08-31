@@ -17,14 +17,14 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Witness graph: PROV-DM JSON-LD emitter (T050-T054).
+"""Witness graph: PROV-DM JSON-LD emitter (T050-T054, T013).
 
 Builds a W3C PROV-DM compliant causal graph from the capture layer's
 events and a sealed seal. The output is a ``dict`` (later serialised to
 JSON-LD by ``graph_to_jsonld``) that is interoperable with PROV tools
 (PROV Toolbox, prov-pip, etc.) via the standard ``prov:`` namespace.
 
-Mapping rules (per spec.md §AC-6 + tasks.md T051-T053):
+Mapping rules (per spec.md §AC-6 + tasks.md T051-T053, T013):
 
 - 1 ``prov:Agent`` for the witness (always emitted, identified by
   ``seal.witness_id``).
@@ -39,6 +39,12 @@ Mapping rules (per spec.md §AC-6 + tasks.md T051-T053):
 - For each ``model_input`` / ``model_output`` event:
   - 1 ``prov:Entity`` with ``prov:wasAttributedTo`` → the witness
     Agent. Carries ``atw:role`` (user / assistant / system).
+- For each ``external_effect`` event (feature 002, 5th choke point):
+  - 1 ``prov:Entity`` with ``prov:wasGeneratedBy`` → the most-recent
+    tool_call Activity for the same tool (if any), otherwise unattached
+    (orphan) with no wasGeneratedBy. Carries ``atw:externalEffect=true``,
+    ``atw:tool``, ``atw:unsealed``, ``atw:payload_sha256``. Hashed only,
+    never embedded (same sanitisation as 001).
 
 C2: the graph is the PRIMARY representation of the trace. It is JSON-LD
 with the standard ``prov:`` namespace, so any PROV-compliant tool can
@@ -48,7 +54,8 @@ plus a minimal JSON-LD parser in ``tests/test_graph.py``.
 
 Determinism (AC-7): the graph has NO dependency on wall-clock time,
 RNG, or external state. Two runs on the same ``events`` + ``seal``
-produce byte-identical JSON-LD (T058).
+produce byte-identical JSON-LD (T058). Also applies to external_effect
+(nodes are ordered by input event order, URIs use stable counters).
 """
 
 from __future__ import annotations
@@ -160,6 +167,13 @@ def build_graph(events: list[CaptureEvent], seal: SealedSeal) -> dict:
     # if real MCP clients emit concurrent or nested calls (then an
     # explicit ``call_id`` must replace positional pairing).
     open_tool_calls: list[str] = []
+    # Map tool name -> stack of Activity IDs for external_effect pairing.
+    # external_effect looks up the most recent Activity for its tool
+    # without consuming it from open_tool_calls (tool_response already
+    # consumed the pairing). This keeps both edges valid:
+    #   tool_call Activity --wasGeneratedBy--> args Entity
+    #   tool_call Activity --wasGeneratedBy--> external_effect Entity
+    tool_activity_stacks: dict[str, list[str]] = {}
 
     for ev in events:
         if ev.type not in CHOKE_POINT_EVENT_TYPES:
@@ -202,6 +216,7 @@ def build_graph(events: list[CaptureEvent], seal: SealedSeal) -> dict:
                 )
             )
             open_tool_calls.append(activity_id)
+            tool_activity_stacks.setdefault(ev.tool, []).append(activity_id)
 
         elif ev.type == "tool_response":
             assert ev.tool is not None, "tool_response event must carry tool"
@@ -255,6 +270,25 @@ def build_graph(events: list[CaptureEvent], seal: SealedSeal) -> dict:
                     },
                 )
             )
+
+        elif ev.type == "external_effect":
+            assert ev.tool is not None, "external_effect event must carry tool"
+            entity_id = _iri_id(f"entity/external_effect_{n}")
+            # Pair with the most recent Activity for the same tool (without
+            # consuming open_tool_calls — tool_response already handled the
+            # LIFO pairing for that tool_call).
+            stack = tool_activity_stacks.get(ev.tool, [])
+            gen: dict | None = {"@id": stack[-1]} if stack else None
+            extra: dict[str, Any] = {
+                "atw:tool": ev.tool,
+                "atw:payload_sha256": ev.payload_sha256,
+                "atw:externalEffect": True,
+                "atw:unsealed": ev.unsealed,
+                "atw:ts": ev.ts,
+            }
+            if gen is not None:
+                extra["prov:wasGeneratedBy"] = gen
+            graph_nodes.append(_node(entity_id, "prov:Entity", **extra))
 
     return {
         "@context": {

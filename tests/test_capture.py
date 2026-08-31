@@ -89,10 +89,11 @@ def test_capture_records_all_4_event_types(sealed: tuple[MockMCPClient, object, 
             ("tool_response", "read_file", "contents-of-x"),
             ("model_input", "", "hola modelo"),
             ("model_output", "", "hola humano"),
+            ("external_effect", "read_file", {"path": "/data/x", "op": "read"}),
         ],
     )
 
-    assert len(events) == 4
+    assert len(events) == 5
     types_in_order = [e.type for e in events]
     assert types_in_order == list(CHOKE_POINT_EVENT_TYPES), (
         f"event types diverged from CHOKE_POINT_EVENT_TYPES: {types_in_order}"
