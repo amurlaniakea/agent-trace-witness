@@ -110,12 +110,12 @@ pytest --durations=0 -v # AC-7 determinism check
 
 ### What it DOES NOT (declared, not hidden — C5 / KNOWN_ISSUES.md)
 
-- **No synergy scoring numérico completo** (mecanismo 5 full) — 002/003 produce `synergy_residual` booleano proxy; score continuo es 004+ (ver KNOWN_ISSUES §6).
-- **No streamable-HTTP transport** MCP — 003 cubre solo stdio (newline-delimited JSON-RPC). Streamable HTTP es 004+.
+- **No synergy scoring numérico completo** (mecanismo 5 full) — 002/003 produce `synergy_residual` booleano proxy; score continuo es 006 (ver KNOWN_ISSUES §6, reconciliación de numeración post-003).
+- **No streamable-HTTP transport** MCP — 003 cubre solo stdio (newline-delimited JSON-RPC). Streamable HTTP es 005.
 - **No eBPF / kernel tracing** para efectos externos — alcance es filesystem/subprocess/MCP-response inspection a nivel biblioteca, no syscall del SO.
 - **No BekchiAI** (live observability + remote termination, arXiv:2608.26867), **no TraceGrant** (contract-governed prevention, arXiv:2608.21126), **no CTF-ABACUS solve profiles** (arXiv:2608.26237). Position is complementary: the witness produces the post-execution graph that those systems can consume. See `spec/constitution.md` C8.
-- **No Ed25519.** Signs with HMAC-SHA256. Distributed verification (multi-witness, public-key verification) is feature 004 if demanded.
-- **No server / REST API.** Library + CLI that the caller integrates. Server is feature 005+.
+- **No Ed25519.** Signs with HMAC-SHA256. Distributed verification (multi-witness, public-key verification) is feature 004 (Q1).
+- **No server / REST API.** Library + CLI that the caller integrates. Server is 007.
 - **No HMAC key management.** Q1 is OPEN — documented in `spec/features/001-mvp/plan.md` §Q1 and `KNOWN_ISSUES.md` §2. Key generation, storage, rotation, and distributed verification are feature 004.
 
 If something you expected is in the list above, it is not a bug — it is declared scope. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the living list.

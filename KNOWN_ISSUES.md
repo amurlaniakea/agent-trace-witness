@@ -135,7 +135,11 @@ de test — añadir excepción para `tests/` + `tests/fixtures/`.
 algún `atw:externalEffect` tras la poda" — puede dar falso positivo si
 sobrevive un efecto externo benigno no relacionado. No distingue "daño
 reaparece por otra vía" de "hay un efecto cualquiera". Declarado como
-proxy cualitativo sin scoring (C5); scoring numérico es 004+.
+proxy cualitativo sin scoring (C5); scoring numérico es 006
+(reconciliación de numeración post-003: scoring estaba en
+003/spec.md §No-Goals como 005, después B3 lo movió a 004+ por error
+de numeración; ahora se ancla en 006 sinergy, no 004 Q1 ni 005
+streamable HTTP).
 
 Riesgo menor anotado en `mcp_adapter.py::_payload_to_bytes`: la
 heurística "si string parece hex par solo [0-9a-fA-F], decodifica como
