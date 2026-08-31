@@ -64,6 +64,8 @@ from .capture import CHOKE_POINT_EVENT_TYPES, EventTuple
 from .exceptions import WitnessTimeoutError
 
 WITNESS_TS_ENV = "ATW_WITNESS_TS"
+RECORD_ENV = "ATW_RECORD"
+RECORD_OUT_ENV = "ATW_RECORD_OUT"
 
 # MCP protocol version we announce in `initialize` (spec 2025-03-26).
 MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -369,6 +371,14 @@ class RealMCPClient:
         self._transport = transport
         if cassette is not None and cassette.exists():
             self._load_cassette(cassette)
+        # ATW_RECORD hook (003 B2): if ATW_RECORD=1 and a live transport
+        # is configured, the close() method will write the events to a
+        # JSONL cassette (path from ATW_RECORD_OUT or default). CI never
+        # sets ATW_RECORD; it is a manual operator action.
+        self._record_path: Path | None = None
+        if os.environ.get(RECORD_ENV) == "1" and transport is not None:
+            out = os.environ.get(RECORD_OUT_ENV)
+            self._record_path = Path(out) if out else None
 
     @classmethod
     def from_cassette(cls, path: Path | str) -> RealMCPClient:
@@ -640,6 +650,53 @@ class RealMCPClient:
             return []
         return self._transport.wire_log()
 
+    def write_cassette(self, path: Path | str) -> None:
+        """Write the captured events to a JSONL cassette file (003 B2).
+
+        Each line is ``{timestamp, type, payload: <json>}`` with
+        ``sort_keys=True`` and ``separators=(",", ":")`` so the file is
+        byte-deterministic. The payload is decoded to JSON if it is
+        canonical JSON bytes; otherwise it is hex-encoded (preserves
+        any binary captured by a custom client).
+
+        This method is the building block of ``ATW_RECORD=1`` — see
+        ``close()`` for the env-driven hook.
+        """
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            for ev in self._events:
+                payload = _payload_to_jsonl_field(ev.payload)
+                obj = {
+                    "timestamp": ev.timestamp,
+                    "type": ev.type,
+                    "payload": payload,
+                }
+                fh.write(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n")
+
     def close(self) -> None:
         if self._transport is not None:
             self._transport.close()
+        # ATW_RECORD=1 hook: if a record path was set at construction
+        # time, dump the captured events to it now (after the transport
+        # is closed, so no in-flight messages remain).
+        if self._record_path is not None:
+            self.write_cassette(self._record_path)
+
+
+def _payload_to_jsonl_field(payload: bytes) -> Any:
+    """Decode canonical-JSON bytes back to a JSON object for the cassette.
+
+    The internal ``EventTuple.payload`` is canonical-JSON bytes (we
+    serialise it that way in every ``record_*`` path). For the cassette
+    we want the human-readable dict, not the byte representation, so
+    ``from_cassette`` can re-load it transparently.
+    """
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return payload.hex()
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return payload.hex()

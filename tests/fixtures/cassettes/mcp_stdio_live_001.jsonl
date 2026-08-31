@@ -1,0 +1,5 @@
+{"payload":{"args":{"path":"/tmp/recorded"},"tool":"delete_file"},"timestamp":"2026-08-30T14:33:00+00:00","type":"tool_call"}
+{"payload":{"result":{"content":[{"text":"deleted '/tmp/recorded'","type":"text"}],"isError":false},"tool":"delete_file"},"timestamp":"2026-08-30T14:33:00+00:00","type":"tool_response"}
+{"payload":{"effect":{"content":[{"text":"deleted '/tmp/recorded'","type":"text"}],"isError":false},"tool":"delete_file"},"timestamp":"2026-08-30T14:33:00+00:00","type":"external_effect"}
+{"payload":{"content":"delete /tmp/recorded","role":"user"},"timestamp":"2026-08-30T14:33:00+00:00","type":"model_input"}
+{"payload":{"content":"done","role":"assistant"},"timestamp":"2026-08-30T14:33:00+00:00","type":"model_output"}
