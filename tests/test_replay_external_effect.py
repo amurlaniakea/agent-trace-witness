@@ -55,7 +55,7 @@ def _sealed_with_delete() -> tuple[MockMCPClient, object, str]:
     return MockMCPClient(), sealed, compute_seal_ref(sealed)
 
 
-def test_chope_point_types_now_five() -> None:
+def test_choke_point_types_now_five() -> None:
     assert "external_effect" in CHOKE_POINT_EVENT_TYPES
     assert len(CHOKE_POINT_EVENT_TYPES) == 5
 

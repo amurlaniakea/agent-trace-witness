@@ -429,19 +429,13 @@ def record_external_effect(
     adapter or mock can keep its own log.
     """
     # Notify client — keep parity with the other record_* helpers.
-    # The mock's generic _coerce mirrors _coerce_to_obj, so we pass the
-    # coerced form.
-    try:
+    # Use hasattr check (not try/except AttributeError) so a real client
+    # bug inside record_external_effect propagates instead of being
+    # swallowed silently (C5 honestidad de alcance).
+    if hasattr(client, "record_external_effect"):
         client.record_external_effect(  # type: ignore[attr-defined]
             tool=tool, effect=_coerce_to_obj(effect), ts=_now_or_frozen_ts(ts)
         )
-    except AttributeError:
-        # Fallback for clients (e.g. older mocks) that do not yet expose
-        # record_external_effect — keep witness's own event even if the
-        # client's log cannot record it. This preserves backward compat
-        # while AC-4's grep still requires the Protocol to be satisfied
-        # for new code (mcp_adapter.py).
-        pass
     payload_bytes = _canonical_bytes({"tool": tool, "effect": _coerce_to_obj(effect)})
     return _make_event(
         type_="external_effect",
