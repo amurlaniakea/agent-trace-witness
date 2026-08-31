@@ -4,24 +4,28 @@
 > recomienda) se declara aquí, no se maquilla. C5: "lo que no esté
 > implementado se declara en KNOWN_ISSUES.md, no se maquilla."
 
-## §1 — MVP captura 4 de 5 choke points
+## §1 — 002 captura 5 de 5 choke points vía CLI y librería (cierre de MVP)
 
-El motor captura:
+El motor captura (desde 002):
 
 - (a) tool call antes de salir hacia el servidor MCP,
 - (b) respuesta del servidor MCP,
 - (c) mensaje al modelo,
-- (d) respuesta del modelo.
+- (d) respuesta del modelo,
+- (e) efecto externo del tool (`external_effect` — file write, delete,
+  side-effect) vía `capture.record_external_effect` y `witness capture`
+  con `kind: external_effect` (fix B4 c57e1fa: el CLI ya expone el 5º choke
+  point; antes de ese fix la librería lo soportaba pero el CLI lo rechazaba).
 
-**No** captura (e) el efecto externo del tool (file write, network request,
-side-effect en el sistema). El quinto choke point requiere un replay engine
-que pueda aislar el efecto de una hipotética eliminación del tool, lo que
-pertenece al mecanismo 4 de HANSARD (replay contrafactual). Se aborda en
-feature 002.
+El `Verify` emite el 5º choke point como `prov:Entity` con
+`atw:externalEffect=true` + `prov:wasGeneratedBy`. El `replay` (mecanismo 4)
+opera sobre ese grafo con cierre transitivo BFS — ver §6 para proxy
+`synergy_residual` y limitación eBPF.
 
-Consecuencia para el caller: si el incidente a posteriori muestra un efecto
-externo no trazado, el witness lo declara explícitamente como "no captured"
-en `verify_graph` — no se inventa cobertura que no tuvo.
+Legado MVP (001): 001 capturaba 4/5 y `verify_graph` reportaba external
+effects como "no captured". Desde 002 esa limitación queda cerrada para
+biblioteca y CLI; eBPF/kernel tracing sigue fuera de alcance (biblioteca,
+no syscall SO).
 
 ## §2 — Q1 (gestión de clave HMAC) ABIERTA
 
@@ -40,16 +44,24 @@ La gestión de la clave HMAC en runtime NO está resuelta en el MVP:
 Detalle completo en `spec/features/001-mvp/plan.md §Q1`. Q1 NO se cierra
 sin revisión explícita de Sil.
 
-## §3 — Sin integración con cliente MCP real
+## §3 — Integración MCP real vía cassettes (002); live stdio pendiente (003+)
 
-El MVP usa un `MockMCPClient` en `tests/fixtures/mcp_client.py`. La
-documentación del contrato que un cliente real debe cumplir vive en el
-docstring de ese módulo. La integración con un cliente MCP de producción
-(lectura de eventos reales, sin cassettes) pertenece a feature 002.
+Desde 002:
 
-Consecuencia: `AC-3` corre contra el mock en este MVP. Cuando se integre el
-cliente real, `AC-3` debe re-correr contra cassettes pregrabadas del
-cliente real — el mock NO debe reemplazar la verificación end-to-end.
+- `src/agent_trace_witness/mcp_adapter.py::RealMCPClient` implementa
+  `MCPClient` Protocol y lee **cassettes** `tests/fixtures/cassettes/*.jsonl`
+  vía `from_cassette(path)` — sin red, sin credenciales. `AC-13/AC-14`
+  se verifican contra cassettes; tests `test_real_mcp_adapter.py` +
+  `test_cassettes.py` lo cubren.
+- `tests/fixtures/mcp_client.py::MockMCPClient` **no se elimina**: queda
+  como contrato del Protocol y como referencia para tests unitarios.
+  `AC-3` original sigue corriendo contra mock; `AC-13/AC-14` complementan
+  con cassettes reales — el mock no reemplaza la verificación con
+  cassettes.
+- **Live stdio** (`subprocess.Popen` + framing MCP real) **no está
+  implementado en 002** — ver §6. El nombre `RealMCPClient` no implica
+  transporte vivo en 002 (es cassette + memoria en este corte). Pertenece
+  a 003+.
 
 ## §4 — Claves HMAC de 16–31 bytes se aceptan sin aviso
 

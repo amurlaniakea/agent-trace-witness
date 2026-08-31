@@ -11,7 +11,9 @@ Implements mechanisms 1 + 2 + 3 of [HANSARD](https://arxiv.org/abs/2608.22512) (
 | Mechanism | What it does | CLI | Spec |
 |-----------|--------------|-----|------|
 | **Seal** (C3) | Signed readiness profile *before* the agent runs: SHA-256 of system prompt, tool list with scopes, timestamp, witness identity, HMAC-SHA256 signature. Any byte changed in the body invalidates the signature. | `witness seal` | AC-1, AC-2 |
-| **Capture** (C1) | External witness at 4 choke points — (a) tool call before MCP, (b) MCP response, (c) message to model, (d) model response — outside the agent's reach (no monkey-patching). | `witness capture` | AC-3, AC-4 |
+| **Capture** (C1) | External witness at 5 choke points — (a) tool call before MCP, (b) MCP response, (c) message to model, (d) model response, (e) external effect (`external_effect` via `record_external_effect` + `witness capture` CLI) — outside the agent's reach (no monkey-patching). | `witness capture` | AC-3, AC-4, AC-11 |
+| **Replay** (C2/C4) | Counterfactual replay mecanismo 4 HANSARD — `replay(graph, {remove: URI})` + `witness replay` CLI, compensation_set con cierre transitivo BFS, `synergy_residual` proxy de mecanismo 5, determinismo 10x byte-idéntico. | `witness replay` | AC-12, AC-15 |
+| **MCP cassette** (C1/C4) | `RealMCPClient` stdio cassette — `from_cassette(path)` lee JSONL congelado sin red/credenciales; cassettes `<1 MB`; live stdio es TODO 003+ (KNOWN_ISSUES §6). | `from_cassette` | AC-13, AC-14 |
 | **Graph** (C2) | Causal graph as PROV-DM JSON-LD (`Entity` / `Activity` / `Agent` + `wasGeneratedBy` / `used` / `wasAssociatedWith`). Canonical, deterministic, interoperable with PROV tools. | `witness graph` + `witness verify` | AC-5, AC-6, AC-9 |
 
 Offline, deterministic, model-agnostic. CPU-only. No network in tests, no LLM calls. Every test < 1 s (AC-7, AC-8).
@@ -55,7 +57,7 @@ JSON
 witness seal --spec /tmp/agent_spec.json --out /tmp/seal.json
 cat /tmp/seal.json | jq .signature   # hmac-sha256:<64-hex>
 
-# 3. Capture — 4 choke points from a scenario file (MVP; feature 002 adds live MCP mode).
+# 3. Capture — 5 choke points from a scenario file (4 MVP + external_effect via CLI y librería; live MCP stdio es 003+).
 cat > /tmp/scenario.json <<'JSON'
 [
   {"kind": "tool_call",     "tool": "read_file", "payload": {"path": "/data/x"}},
@@ -96,22 +98,24 @@ pytest --durations=0 -v # AC-7 determinism check
 
 ## Scope
 
-### What it DOES (MVP 001 — C1 + C2 + C3)
+### What it DOES (001-mvp + 002-replay — C1 + C2 + C3 + C4)
 
 - Generates a **signed seal** before execution (AC-1). Detects any post-hoc tampering via HMAC-SHA256 (constant-time compare). Reads the key from `ATW_WITNESS_KEY` (single name for prod and tests; no test-only branch).
-- **Captures** at 4 choke points outside the agent's code (AC-3, AC-4). `capture.py` imports `mcp` abstraction, never the agent. Verified by static grep — 0 hits for monkey-patching patterns.
-- **Emits** a PROV-DM JSON-LD graph (AC-5, AC-6) with typed nodes and relations, canonical (`sort_keys=True`) and deterministic (10× run identical byte-for-byte).
+- **Captures** at 5 choke points outside the agent's code (AC-3, AC-4, AC-11) — (a) tool call, (b) MCP response, (c) model input, (d) model output, (e) external effect (`record_external_effect` + `witness capture --scenario` con `kind: external_effect` vía CLI y librería). `capture.py` + `mcp_adapter.py` importan abstracción MCP, nunca el agente. Verificado por static grep — 0 hits para monkey-patching.
+- **Emits** a PROV-DM JSON-LD graph (AC-5, AC-6) con typed nodes/relations + `atw:externalEffect=true` para el 5º choke point, canónico (`sort_keys=True`) y determinista (10x run byte-idéntico).
+- **Replays** contrafactual (HANSARD mecanismo 4, AC-12/AC-15): `replay(graph, {remove: atw:activity/tool_call_n})` + `witness replay --graph --seal --counterfactual --out` produce `compensation_set` (subgrafo con cierre transitivo BFS sobre `wasGeneratedBy/used/wasDerivedFrom`) + `synergy_residual` proxy de mecanismo 5 (booleano cualitativo, ver KNOWN_ISSUES §6) + `not_replayable` (C5). Determinismo 10x byte-idéntico, sin RNG/time.
+- **Real MCP via cassettes** (AC-13/AC-14): `RealMCPClient.from_cassette(path)` lee JSONL congelado `<1 MB` sin red/credenciales; `tests/fixtures/cassettes/` con README cómo grabar con `ATW_RECORD=1`. Live stdio (`Popen`) es TODO 003+ (KNOWN_ISSUES §6), no se promete transporte vivo en 002.
 - **Verifies** a graph against its seal and reports `unsealed_tool` anomalies with `severity: error` (AC-2, AC-9). External-validity fixture `hansard_scenario_1.jsonl` built from HANSARD §attribution laundering, not from expected witness output.
-- CLI is shell-chainable: every artifact is JSON/JSONL/JSON-LD and `jq` can consume it without manual parsing (AC-10).
+- CLI is shell-chainable: every artifact is JSON/JSONL/JSON-LD and `jq` can consume it without manual parsing (AC-10, AC-15). Pipeline `seal → capture(5) → graph → replay → verify` ejercitado de punta a punta vía CLI (incluido `not_replayable` exit 1).
 
 ### What it DOES NOT (declared, not hidden — C5 / KNOWN_ISSUES.md)
 
-- **No external-effect capture.** The 5th choke point (file write, network request) requires a replay engine — feature 002. The MVP captures 4/5; `verify_graph` explicitly reports external effects as `not captured`.
-- **No replay contrafactual** (HANSARD mechanism 4) and **no synergy residual** (mechanism 5) — features 002+.
+- **No synergy scoring numérico completo** (mecanismo 5 full) — 002 produce `synergy_residual` booleano proxy; score continuo es 003+.
+- **No eBPF / kernel tracing** para efectos externos — alcance es filesystem/subprocess/MCP-response inspection a nivel biblioteca, no syscall del SO.
 - **No BekchiAI** (live observability + remote termination, arXiv:2608.26867), **no TraceGrant** (contract-governed prevention, arXiv:2608.21126), **no CTF-ABACUS solve profiles** (arXiv:2608.26237). Position is complementary: the witness produces the post-execution graph that those systems can consume. See `spec/constitution.md` C8.
-- **No Ed25519.** MVP signs with HMAC-SHA256. Distributed verification (multi-witness, public-key verification) is feature 004 if demanded.
+- **No Ed25519.** Signs with HMAC-SHA256. Distributed verification (multi-witness, public-key verification) is feature 004 if demanded.
 - **No server / REST API.** Library + CLI that the caller integrates. Server is feature 005+.
-- **No real MCP client integration.** `tests/fixtures/mcp_client.py` is a `MockMCPClient` that documents the contract a real client must satisfy. `AC-3` runs against the mock in this MVP; it will re-run against real-client cassettes when feature 002 lands.
+- **No live MCP stdio transport.** `RealMCPClient` en 002 es cassette-only (KNOWN_ISSUES §6); live `Popen` + framing MCP pertenece a 003+.
 - **No HMAC key management.** Q1 is OPEN — documented in `spec/features/001-mvp/plan.md` §Q1 and `KNOWN_ISSUES.md` §2. Key generation, storage, rotation, and distributed verification are feature 004.
 
 If something you expected is in the list above, it is not a bug — it is declared scope. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the living list.
