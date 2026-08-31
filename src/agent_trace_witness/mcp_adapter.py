@@ -17,21 +17,25 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Real MCP client — adapter stdio para transporte real (T030, AC-13).
+"""Real MCP client — adapter stdio (T030, AC-13) — estado 002.
 
-Implementa ``MCPClient`` Protocol (mismo que MockMCPClient) sin importar
-código del agente (C1) y sin patch dinamico. En 002 solo stdio; SSE
-queda explícitamente fuera (ver spec.md §No-Goals, pertenece a 003+).
+Implementa ``MCPClient`` Protocol (mismo contrato que MockMCPClient) sin
+importar codigo del agente (C1) y sin patch dinamico. En 002 solo stdio;
+SSE queda explícitamente fuera (ver spec.md No-Goals, pertenece a 003+).
 
-Dos modos:
+Estado honesto en 002 (C5):
 
-- **Live (cuando hay servidor):** se usa como context manager que spawnea
-  un subprocess MCP vía stdio y captura eventos. No se ejercita en CI
-  (requiere credenciales/binario externo).
-- **Cassette (CI):** ``RealMCPClient.from_cassette(path)`` lee JSONL
-  congelado ``tests/fixtures/cassettes/*.jsonl`` sin red, sin
-  ``ATW_RECORD``, sin credenciales. Cada línea es un EventTuple
-  serializado ``{\"timestamp\": ..., \"type\": ..., \"payload\": <hex|json>}``.
+- **Cassette (CI, implementado):** ``RealMCPClient.from_cassette(path)``
+  lee JSONL congelado ``tests/fixtures/cassettes/*.jsonl`` sin red, sin
+  ``ATW_RECORD``, sin credenciales. Cada linea es un EventTuple
+  serializado ``{"timestamp": ..., "type": ..., "payload": <hex|json>}``.
+  Este es el unico modo con transporte real en 002.
+- **Live stdio (NO implementado en 002):** el spawn de subprocess MCP via
+  stdio (Popen + lectura stdin/stdout + parsing protocolo MCP) es TODO y
+  pertenece a 003+ o a un follow-up de 002 si se prioriza. El nombre
+  ``RealMCPClient`` no implica que hoy hable con un servidor real; en 002
+  es cassette + memoria, mismo patron que MockMCPClient pero con fichero
+  congelado en vez de eventos sinteticos en test. Ver KNOWN_ISSUES §6.
 
 El adapter no importa agente/LLM ni hace patch dinamico — verificado por
 ``test_capture_architecture.py``.
@@ -63,11 +67,14 @@ def _payload_to_bytes(payload: Any) -> bytes:
     if isinstance(payload, bytes):
         return payload
     if isinstance(payload, str):
-        # hex string de bytes? si parece hex, decodifica, si no utf-8
+        # Riesgo conocido (no bloqueante B3): heuristica "si parece hex par
+        # solo [0-9a-fA-F] decodifica como hex" puede colisionar con una
+        # palabra legitima par solo-hex (poco comun pero posible). No se
+        # corrige en 002 para no romper cassettes existentes; queda anotado
+        # en KNOWN_ISSUES §6 junto al gap live-stdio. Fix futuro: marcar
+        # payloads hex con prefijo explicito o tipo aparte.
         try:
-            # heurística: si es hex par y solo hex chars, trata como hex
             if len(payload) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in payload):
-                # evita falsos positivos: si payload fue string original corto que casualmente es hex, igual decodificar hex no rompe porque mock usa hex para bytes
                 return bytes.fromhex(payload)
         except Exception:
             pass
@@ -113,9 +120,10 @@ def _load_event_tuple(obj: dict[str, Any]) -> EventTuple:
 
 
 class RealMCPClient:
-    """Adapter stdio que implementa MCPClient Protocol (AC-13).
+    """Adapter stdio que implementa MCPClient Protocol (AC-13) — 002 cassette-only.
 
-    CI usa ``from_cassette``; live usa subprocess stdio (no ejercitado en CI).
+    CI usa ``from_cassette`` (JSONL congelado). Live subprocess stdio no
+    implementado en 002; ver docstring de modulo y KNOWN_ISSUES §6 (C5).
     """
 
     def __init__(self, cassette: Path | None = None) -> None:

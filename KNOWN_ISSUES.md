@@ -97,3 +97,37 @@ documentado** — no es un leak:
 
 Si un escáner de secretos flaggea `0`×64 o `dc91ea10…`, es falso positivo
 de test — añadir excepción para `tests/` + `tests/fixtures/`.
+
+## §6 — RealMCPClient en 002 es cassette-only (live stdio NO implementado)
+
+`src/agent_trace_witness/mcp_adapter.py::RealMCPClient` (T030, AC-13)
+implementa `MCPClient` Protocol y en 002 **solo** lee cassettes congeladas
+`tests/fixtures/cassettes/*.jsonl` vía `from_cassette(path)` — sin red,
+sin `ATW_RECORD`, sin credenciales. No hace `subprocess.Popen`, no lee
+`stdin`/`stdout`, no parsea protocolo MCP real en este corte.
+
+El docstring original prometía "Live (cuando hay servidor): context manager
+que spawnea subprocess MCP vía stdio" — esa promesa NO se cumple en 002 y
+se corrigió para no inducir a error (C5). El nombre `RealMCPClient` no
+implica transporte live en 002: en 002 es cassette + memoria, mismo patrón
+que `MockMCPClient` pero con fichero congelado en vez de eventos sintéticos
+en el test. El test `test_real_mcp_client_not_alias_of_mock` solo prueba
+que son clases distintas con distinto origen de eventos, no que uno hable
+stdio real.
+
+Consecuencia: AC-13 "lectura de eventos reales del transporte MCP" en 002
+se verifica contra cassettes pregrabadas, no contra un servidor MCP vivo.
+El spawn live stdio (Popen + framing MCP) pertenece a 003+ (o a un
+follow-up de 002 si se prioriza).
+
+Riesgo menor anotado en `mcp_adapter.py::_payload_to_bytes`: la heurística
+"si string parece hex par solo [0-9a-fA-F], decodifica como hex" puede
+colisionar silenciosamente con una palabra legítima par solo-hex (poco
+común pero posible). No bloqueante para B3; fix futuro: prefijo explícito
+o tipo aparte para payloads hex.
+
+`synergy_residual` (replay): proxy booleano "queda cualquier
+`atw:externalEffect` tras la poda" — puede dar falso positivo si sobrevive
+un efecto externo benigno no relacionado. No distingue "daño reaparece por
+otra vía" de "hay un efecto cualquiera". Declarado como proxy cualitativo
+sin scoring (C5); scoring numérico es 003+.
