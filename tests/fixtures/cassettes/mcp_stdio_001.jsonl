@@ -1,0 +1,5 @@
+{"payload":{"args":{"path":"/tmp/cassette.txt"},"tool":"read_file"},"timestamp":"2026-08-31T00:00:00+00:00","type":"tool_call"}
+{"payload":{"result":"hello cassette","tool":"read_file"},"timestamp":"2026-08-31T00:00:01+00:00","type":"tool_response"}
+{"payload":{"effect":{"op":"read","path":"/tmp/cassette.txt"},"tool":"read_file"},"timestamp":"2026-08-31T00:00:02+00:00","type":"external_effect"}
+{"payload":{"content":"read /tmp/cassette.txt","role":"user"},"timestamp":"2026-08-31T00:00:03+00:00","type":"model_input"}
+{"payload":{"content":"done","role":"assistant"},"timestamp":"2026-08-31T00:00:04+00:00","type":"model_output"}
