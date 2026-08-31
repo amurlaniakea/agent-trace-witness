@@ -64,6 +64,15 @@ class WitnessGraphError(WitnessError, ValueError):
     """
 
 
+class WitnessTimeoutError(WitnessError, TimeoutError):
+    """Live stdio timed out waiting for a server response (003 AC-19).
+
+    Raised by ``RealMCPClient.from_stdio`` when the MCP server does not
+    answer within ``timeout``. Distinct from ``WitnessCaptureError`` so
+    callers can distinguish "server hung" from "bad payload".
+    """
+
+
 class WitnessReplayError(WitnessError, ValueError):
     """The replay engine could not produce a counterfactual result (T010).
 

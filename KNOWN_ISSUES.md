@@ -150,12 +150,19 @@ sin scoring (C5); scoring numérico es 003+.
 `src/agent_trace_witness/mcp_adapter.py::RealMCPClient.from_stdio()` son
 ambos autoría de Hermes, basados en su lectura de la spec
 `modelcontextprotocol.io/specification/2025-03-26/basic/transports` §stdio
-(newline-delimited JSON-RPC UTF-8, `\n` MUST NOT embebido). Si ambos
-comparten el mismo malentendido de un detalle del framing (correlación de
-`id` JSON-RPC en notificaciones vs requests, mensaje partido entre dos
-lecturas), AC-16 puede pasar en verde sin hablar con un servidor MCP
-conforme a spec — misma circularidad cazada con los fixtures HANSARD en
-AC-9, a nivel de protocolo.
++ `.../basic/lifecycle` §Initialization + `.../server/tools` §Calling Tools
+(newline-delimited JSON-RPC UTF-8, `\n` MUST NOT embebido, `initialize`
+con `protocolVersion`/`capabilities`/`clientInfo` + `notifications/initialized`,
+`tools/call` con `{"name":...,"arguments":...}` → `{"content":[...],"isError":...}`).
+Si ambos comparten el mismo malentendido de un detalle del framing o de la
+semántica (shape de `initialize`, inventar `record_*` como métodos RPC en
+vez de `tools/call` real), AC-16 puede pasar en verde sin hablar con un
+servidor MCP conforme a spec. B1 `ef7bfc3` demostró que esto no es
+hipotético: ambos lados inventaron `record_tool_call` como método RPC —
+misma circularidad cazada con los fixtures HANSARD en AC-9, pero a nivel de
+protocolo completo. Tras el revert, 003 exige `initialize` real +
+`tools/call` real + `external_effect` **derivado** del mismo `result.content`
+(no como RPC separada, igual que 002: response inspection).
 
 No se trae un servidor MCP de terceros a CI (rompería C4). Conformidad
 verificada contra la spec escrita, no contra un servidor MCP independiente.
