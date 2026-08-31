@@ -246,3 +246,84 @@ def test_cli_replay_exit_codes(tmp_path: Path) -> None:
     )
     assert r3.returncode == 2
     assert "internal error" in r3.stderr.lower()
+
+
+def test_cli_capture_with_external_effect_via_cli(tmp_path: Path) -> None:
+    """Regresión B1-B4: witness capture CLI debe aceptar external_effect (5º choke point).
+
+    El CLI validaba kind contra CHOKE_POINT_EVENT_TYPES (5) pero el elif
+    solo ramificaba 4 tipos — external_effect se rechazaba con 'kind unknown'
+    aunque capture.run_capture() sí lo soportara. Este test habría cazado la
+    discontinuidad librería vs CLI.
+    """
+    env = {"ATW_WITNESS_KEY": "0" * 64, "ATW_WITNESS_TS": "2026-08-31T00:00:00+00:00"}
+    # 1) seal via CLI
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "system_prompt": "test external_effect via cli",
+                "tools": [
+                    {"name": "read_file", "scopes": ["read:/tmp/**"]},
+                    {"name": "delete_file", "scopes": ["write:/tmp/**"]},
+                ],
+                "witness_id": "witness-cli-external",
+            }
+        ),
+        encoding="utf-8",
+    )
+    seal_path = tmp_path / "seal.json"
+    r_seal = _run(["seal", "--spec", str(spec_path), "--out", str(seal_path)], env=env)
+    assert r_seal.returncode == 0, f"seal failed: {r_seal.stderr!r}"
+
+    # 2) capture con external_effect via CLI (el bug rechazaba aquí)
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text(
+        json.dumps(
+            [
+                {"kind": "tool_call", "tool": "delete_file", "payload": {"path": "/tmp/x"}},
+                {
+                    "kind": "external_effect",
+                    "tool": "delete_file",
+                    "payload": {"path": "/tmp/x", "op": "delete"},
+                },
+                {"kind": "tool_response", "tool": "delete_file", "payload": "ok"},
+                {"kind": "tool_call", "tool": "read_file", "payload": {"path": "/tmp/y"}},
+                {"kind": "tool_response", "tool": "read_file", "payload": "content-y"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    events_path = tmp_path / "events.jsonl"
+    r_cap = _run(
+        [
+            "capture",
+            "--scenario",
+            str(scenario),
+            "--seal",
+            str(seal_path),
+            "--out",
+            str(events_path),
+        ],
+        env=env,
+    )
+    assert r_cap.returncode == 0, (
+        f"capture with external_effect failed: stdout={r_cap.stdout!r} stderr={r_cap.stderr!r}"
+    )
+    lines = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 5
+    assert any(entry["type"] == "external_effect" for entry in lines)
+
+    # 3) graph debe contener atw:externalEffect
+    graph_path = tmp_path / "graph.jsonld"
+    r_graph = _run(
+        ["graph", "--events", str(events_path), "--seal", str(seal_path), "--out", str(graph_path)],
+        env=env,
+    )
+    assert r_graph.returncode == 0, f"graph failed: {r_graph.stderr!r}"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert any(n.get("atw:externalEffect") is True for n in graph["@graph"])

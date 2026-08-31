@@ -50,6 +50,7 @@ from .capture import (
     CHOKE_POINT_EVENT_TYPES,
     CaptureEvent,
     compute_seal_ref,
+    record_external_effect,
     record_model_input,
     record_model_output,
     record_tool_call,
@@ -237,7 +238,7 @@ def capture(
     ),
     out: str = typer.Option(..., "--out", help="Path to write captured events (JSONL)."),
 ) -> None:
-    """Record events at the 4 choke points from a scenario file.
+    """Record events at the 5 choke points from a scenario file.
 
     The MVP does NOT integrate with a real MCP client (see
     ``KNOWN_ISSUES.md §3``). The scenario file is a JSON list of event
@@ -250,6 +251,7 @@ def capture(
         {"kind": "tool_response",   "tool": "read_file", "payload": {...}}
         {"kind": "model_input",     "role": "user",      "payload": "..."}
         {"kind": "model_output",    "role": "assistant", "payload": "..."}
+        {"kind": "external_effect", "tool": "delete_file", "payload": {"path": "/tmp/x", "op": "delete"}}
 
     Feature 002 will add a real-MCP-client mode (no scenario file).
     """
@@ -303,6 +305,9 @@ def capture(
         def record_model_output(self, *a, **k):  # noqa: ARG002
             return EventTuple(timestamp="", type="model_output", payload=b"")
 
+        def record_external_effect(self, *a, **k):  # noqa: ARG002
+            return EventTuple(timestamp="", type="external_effect", payload=b"")
+
         def events(self):
             return []
 
@@ -342,6 +347,10 @@ def capture(
                     s_ref,
                     sealed_seal,
                     role=str(desc.get("role", "assistant")),
+                )
+            elif kind == "external_effect":
+                ev = record_external_effect(
+                    client, str(desc.get("tool", "")), payload, s_ref, sealed_seal
                 )
             else:
                 # Defensive — kind was checked above but the type
