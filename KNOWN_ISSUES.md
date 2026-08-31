@@ -110,39 +110,82 @@ documentado** — no es un leak:
 Si un escáner de secretos flaggea `0`×64 o `dc91ea10…`, es falso positivo
 de test — añadir excepción para `tests/` + `tests/fixtures/`.
 
-## §6 — RealMCPClient en 002 es cassette-only (live stdio NO implementado)
+## §6 — Lo que 003 NO cierra (live stdio implementado; quedan scoring + heurística hex)
 
-`src/agent_trace_witness/mcp_adapter.py::RealMCPClient` (T030, AC-13)
-implementa `MCPClient` Protocol y en 002 **solo** lee cassettes congeladas
-`tests/fixtures/cassettes/*.jsonl` vía `from_cassette(path)` — sin red,
-sin `ATW_RECORD`, sin credenciales. No hace `subprocess.Popen`, no lee
-`stdin`/`stdout`, no parsea protocolo MCP real en este corte.
+`src/agent_trace_witness/mcp_adapter.py::RealMCPClient` (003) implementa
+`MCPClient` Protocol con dos modos:
 
-El docstring original prometía "Live (cuando hay servidor): context manager
-que spawnea subprocess MCP vía stdio" — esa promesa NO se cumple en 002 y
-se corrigió para no inducir a error (C5). El nombre `RealMCPClient` no
-implica transporte live en 002: en 002 es cassette + memoria, mismo patrón
-que `MockMCPClient` pero con fichero congelado en vez de eventos sintéticos
-en el test. El test `test_real_mcp_client_not_alias_of_mock` solo prueba
-que son clases distintas con distinto origen de eventos, no que uno hable
-stdio real.
+- `from_cassette(path)` (002) — lee cassettes JSONL congeladas sin red,
+  sin `ATW_RECORD`, sin credenciales.
+- `from_stdio(cmd, args, timeout=)` (003, AC-16) — spawnea el binario
+  con `subprocess.Popen` (sin `shell=True`, sin SDK `mcp`/`httpx`/`anyio`),
+  hace handshake JSON-RPC 2.0 conforme a spec MCP 2025-03-26
+  (`initialize` con `protocolVersion`/`capabilities`/`clientInfo` →
+  respuesta con `protocolVersion`/`capabilities`/`serverInfo` →
+  `notifications/initialized` sin `id`), y por cada invocación de tool
+  emite un único `tools/call` con `params.name`/`arguments` reales;
+  `tool_response` y `external_effect` derivan del mismo `result.content`
+  (response inspection, no segunda RPC). Tests: 7 en
+  `tests/test_live_stdio.py` + 4 en `tests/test_live_stdio_lifecycle.py`
+  + 5+2 en `test_cassettes_live.py` y `test_live_stdio_determinism.py`.
+  Stub autoral: `tests/fixtures/stubs/mcp_stdio_stub.py` (ver §7 sobre
+  circularidad stub/cliente).
 
-Consecuencia: AC-13 "lectura de eventos reales del transporte MCP" en 002
-se verifica contra cassettes pregrabadas, no contra un servidor MCP vivo.
-El spawn live stdio (Popen + framing MCP) pertenece a 003+ (o a un
-follow-up de 002 si se prioriza).
+`synergy_residual` (replay, AC-15): sigue siendo proxy booleano "queda
+algún `atw:externalEffect` tras la poda" — puede dar falso positivo si
+sobrevive un efecto externo benigno no relacionado. No distingue "daño
+reaparece por otra vía" de "hay un efecto cualquiera". Declarado como
+proxy cualitativo sin scoring (C5); scoring numérico es 004+.
 
-Riesgo menor anotado en `mcp_adapter.py::_payload_to_bytes`: la heurística
-"si string parece hex par solo [0-9a-fA-F], decodifica como hex" puede
-colisionar silenciosamente con una palabra legítima par solo-hex (poco
-común pero posible). No bloqueante para B3; fix futuro: prefijo explícito
-o tipo aparte para payloads hex.
+Riesgo menor anotado en `mcp_adapter.py::_payload_to_bytes`: la
+heurística "si string parece hex par solo [0-9a-fA-F], decodifica como
+hex" puede colisionar silenciosamente con una palabra legítima par
+solo-hex (poco común pero posible). No bloqueante; fix futuro: prefijo
+explícito o tipo aparte para payloads hex.
 
-`synergy_residual` (replay): proxy booleano "queda cualquier
-`atw:externalEffect` tras la poda" — puede dar falso positivo si sobrevive
-un efecto externo benigno no relacionado. No distingue "daño reaparece por
-otra vía" de "hay un efecto cualquiera". Declarado como proxy cualitativo
-sin scoring (C5); scoring numérico es 003+.
+Cosa que 003 SÍ cierra (movida aquí para que un auditor vea el delta
+sin tener que leer el commit B3): el antiguo bullet "live stdio NO
+implementado" ya no es cierto — `from_stdio` está vivo, con handshake
+real y `ATW_RECORD=1` para grabar cassettes. Cierre de este item: 003,
+commit `2e8a6a2`.
+
+### §6.1 — Nota de gobernanza: dos intents del commit B2 antes del definitivo (003)
+
+El commit B2 que cierra esta sección (`2e8a6a2`) no es el primer
+intento. El operador lo recommiteó dos veces dentro de esta sesión
+porque el cuerpo del commit describía contenido que el diff no tenía:
+
+- `5dd290e` (intento 1): cuerpo afirmaba `+3` tests en
+  `test_live_stdio.py` y `+1` en `test_live_stdio_lifecycle.py` que en
+  realidad vivían en el commit previo `e770d39` o no existían en el
+  repo. Diff real: 4 files / 446 insertions. La discrepancia fue
+  detectada por el propio agente cotejando el mensaje contra `git
+  diff --stat HEAD~1`, no por el pipeline CI.
+- `deaa1e7` (intento 2): cuerpo corregido para describir solo los 4
+  files reales, pero el conteo de tests (línea "Verificación")
+  citaba `105 passed, 1 skipped` (conteo de `e770d39`) en vez del
+  conteo real del propio commit (`112 passed, 1 skipped` tras los
+  +7 tests B2). Detectado otra vez por el propio agente al contrastar
+  el número contra el output crudo de `pytest` en un worktree aislado.
+- `2e8a6a2` (definitivo, este commit): cuerpo verificado contra el
+  diff y contra el output de pytest en worktree. Diff: 4 files /
+  446 insertions. Conteos: 94+1 (B5 cierre 002) → 105+1 (B1) →
+  112+1 (B2). Numeración 1-a-1 con la realidad.
+
+El reflog local conserva los tres commits (`5dd290e`, `deaa1e7`,
+`2e8a6a2`) hasta el próximo `gc`. Ambos intents intermedios
+permanecieron siempre en local, nunca se pushearon; ningún
+colaborador externo los vio. La auditoría del mensaje contra el
+diff se hizo con `git diff --cached --stat` + `git show --stat` y
+conteos verificados en worktrees aislados por SHA (`f530110`,
+`e770d39`, `2e8a6a2`).
+
+Lección operativa: el cuerpo de un commit es un claim, no un resumen.
+Antes de `git commit` se coteja cada línea del cuerpo (números,
+nombres de tests, paths, conteos) contra el diff staged y contra
+ejecución real de pytest/ruff en un worktree limpio. Si el cuerpo
+no se verifica 1-a-1, se reescribe — no se commitea con la
+discrepancia adentro "porque la idea es correcta".
 
 ## §7 — Stub de test para live stdio es autoría propia (003, C5)
 
@@ -152,22 +195,28 @@ ambos autoría de Hermes, basados en su lectura de la spec
 `modelcontextprotocol.io/specification/2025-03-26/basic/transports` §stdio
 + `.../basic/lifecycle` §Initialization + `.../server/tools` §Calling Tools
 (newline-delimited JSON-RPC UTF-8, `\n` MUST NOT embebido, `initialize`
-con `protocolVersion`/`capabilities`/`clientInfo` + `notifications/initialized`,
-`tools/call` con `{"name":...,"arguments":...}` → `{"content":[...],"isError":...}`).
-Si ambos comparten el mismo malentendido de un detalle del framing o de la
-semántica (shape de `initialize`, inventar `record_*` como métodos RPC en
-vez de `tools/call` real), AC-16 puede pasar en verde sin hablar con un
-servidor MCP conforme a spec. B1 `ef7bfc3` demostró que esto no es
-hipotético: ambos lados inventaron `record_tool_call` como método RPC —
-misma circularidad cazada con los fixtures HANSARD en AC-9, pero a nivel de
-protocolo completo. Tras el revert, 003 exige `initialize` real +
-`tools/call` real + `external_effect` **derivado** del mismo `result.content`
-(no como RPC separada, igual que 002: response inspection).
+con `protocolVersion`/`capabilities`/`clientInfo` + `notifications/initialized`
+sin `id`, `tools/call` con `{"name":...,"arguments":...}` → `{"content":[...], "isError":...}`).
+**El riesgo de circularidad stub/cliente se materializó durante 003:**
+B1 `ef7bfc3` (revertido en `520a0e7`, no pusheado) demostró que ambos
+lados podían inventar el mismo método RPC falso (`record_tool_call` como
+método JSON-RPC en vez de `tools/call` real). El commit `e770d39`
+corrigió la implementación a spec 2025-03-26 conforme.
 
-No se trae un servidor MCP de terceros a CI (rompería C4). Conformidad
-verificada contra la spec escrita, no contra un servidor MCP independiente.
-El stub no es implementación de referencia de terceros. Prueba manual de
-humo fuera de la suite automatizada contra un servidor MCP real instalable
-(`npx`/`uvx`, sin ser dependencia de CI) es opcional y valiosa para dar
-confianza real, pero no bloqueante para AC-16. Si esa prueba manual se
-hace, se documenta en `tests/fixtures/cassettes/README.md`.
+**Mitigación aplicada (003):** el stub responde `-32601 Method not
+found` ante cualquier método JSON-RPC desconocido. La verificación
+adversarial (ejecutada a mano por el operador y por la suite de tests
+tras la corrección) confirmó que `record_tool_call` (y otros métodos
+inventados) salen rechazados con ese error — exactamente como respondería
+un servidor MCP real. La forma `initialize` con `protocolVersion`/
+`capabilities`/`clientInfo` anidados y la respuesta con `serverInfo` se
+verifican literal-campo-a-campo en `test_initialize_handshake_conforms_to_spec`.
+
+**Lo que NO se hace:** no se trae un servidor MCP de terceros a CI
+(rompería C4 / AC-7). Conformidad verificada contra la spec escrita, no
+contra un servidor MCP independiente. El stub no es implementación de
+referencia de terceros. Prueba manual de humo fuera de la suite
+automatizada contra un servidor MCP real instalable (`npx`/`uvx`, sin
+ser dependencia de CI) es opcional y valiosa para dar confianza real,
+pero no bloqueante para AC-16. Si esa prueba manual se hace, se
+documenta en `tests/fixtures/cassettes/README.md`.
