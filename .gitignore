@@ -52,6 +52,12 @@ credentials/
 .aws/
 .gnupg/
 
+# Q1 keyring (feature 004) — NUNCA committear claves HMAC
+# Default path from `witness keygen` (no --out) is ./keys.json.
+keys/
+keys.json
+*.keys.json
+
 # Hermes / agent state
 .hermes/
 
