@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from .exceptions import WitnessKeyError, WitnessSealError
+from .keyring import Keyring
 
 # Public — re-exported for callers that want to construct inputs without
 # importing the internal dataclass hierarchy.
@@ -297,15 +298,37 @@ def make_seal(
     )
 
 
-def sign_seal(seal: Seal, key: str | None = None) -> SealedSeal:
+def sign_seal(
+    seal: Seal,
+    key: str | None = None,
+    *,
+    keyring: Keyring | None = None,
+) -> SealedSeal:
     """Sign a ``Seal`` with HMAC-SHA256, returning a ``SealedSeal``.
 
     ``key`` is a hex-encoded HMAC key (>= 16 bytes, 32+ recommended). If
-    ``None``, the function reads ``ATW_WITNESS_KEY`` from the environment
-    (T018 wiring for ``Q1``).
+    ``None`` and ``keyring`` is also None, the function reads
+    ``ATW_WITNESS_KEY`` from the environment (T018 wiring for Q1).
+
+    ``keyring`` (feature 004 T044-2) is the operative Keyring from
+    Q1. When provided, ``sign_seal`` uses the keyring's active key
+    (instead of the env var or ``key`` arg) AND embeds the active
+    key's ``key_id`` into the resulting ``SealedSeal`` as post-signature
+    metadata (D6/D7 of plan.md). The HMAC is computed over the same
+    canonical body regardless of whether ``keyring`` is provided —
+    only the ``key_id`` field of the SealedSeal changes.
+
+    Precedence: ``keyring`` > ``key`` > ``ATW_WITNESS_KEY``. Passing
+    both ``key`` and ``keyring`` is supported: ``keyring`` wins (the
+    single-key arg is the legacy path; keyring is the operative path).
     """
     if not isinstance(seal, Seal):
         raise WitnessSealError(f"seal must be a Seal, got {type(seal).__name__}")
+    key_id: str | None = None
+    if keyring is not None:
+        active = keyring.active_key()
+        key = active.secret
+        key_id = active.key_id
     key_bytes = _read_key(key)
     body = _seal_body_to_dict(seal)  # no "signature" key for unsigned Seal
     mac = hmac.new(key_bytes, _canonical_bytes(body), hashlib.sha256).hexdigest()
@@ -315,10 +338,16 @@ def sign_seal(seal: Seal, key: str | None = None) -> SealedSeal:
         created_at=seal.created_at,
         witness_id=seal.witness_id,
         signature=f"{SIGNATURE_ALGO}:{mac}",
+        key_id=key_id,
     )
 
 
-def verify_seal(sealed: SealedSeal, key: str | None = None) -> bool:
+def verify_seal(
+    sealed: SealedSeal,
+    key: str | None = None,
+    *,
+    keyring: Keyring | None = None,
+) -> bool:
     """Verify a ``SealedSeal``'s HMAC-SHA256 signature.
 
     Returns ``True`` if the signature matches the canonical body, ``False``
@@ -326,16 +355,59 @@ def verify_seal(sealed: SealedSeal, key: str | None = None) -> bool:
     Raises ``WitnessKeyError`` if the key is missing/invalid.
 
     Uses ``hmac.compare_digest`` to avoid timing oracles.
+
+    ``keyring`` (feature 004 T044-3/T044-4) implements the D7 lookup:
+
+    - If the SealedSeal has ``key_id`` (v2): look up the exact entry
+      in the keyring. If the entry is missing or revoked, the seal
+      cannot be verified and verify returns False. This is the
+      **exact-match v2** path.
+    - If the SealedSeal has no ``key_id`` (v1, including all
+      fixtures from 001-003): try every non-revoked key in the
+      keyring until one verifies. If any verifies, return True. This
+      is the **try-all v1** path that keeps backward compatibility.
+
+    Precedence: ``keyring`` > ``key`` > ``ATW_WITNESS_KEY``. When
+    ``keyring`` is provided, ``key`` is ignored. When neither is
+    provided, the function reads ``ATW_WITNESS_KEY`` from the
+    environment.
     """
     if not isinstance(sealed, SealedSeal):
         raise WitnessSealError(f"sealed must be a SealedSeal, got {type(sealed).__name__}")
+    if keyring is not None:
+        if sealed.key_id is not None:
+            # v2: exact-match lookup.
+            entry = keyring.get_key(sealed.key_id)
+            if entry is None:
+                return False
+            return _verify_with_key(sealed, entry.secret)
+        # v1: try-all against every non-revoked key.
+        for entry in keyring.verification_keys():
+            if _verify_with_key(sealed, entry.secret):
+                return True
+        return False
+    # Legacy path: single key.
     key_bytes = _read_key(key)
+    return _verify_with_key_bytes(sealed, key_bytes)
+
+
+def _verify_with_key(sealed: SealedSeal, hex_key: str) -> bool:
+    """Verify using a hex-encoded key string."""
+    try:
+        key_bytes = bytes.fromhex(hex_key)
+    except ValueError:
+        return False
+    return _verify_with_key_bytes(sealed, key_bytes)
+
+
+def _verify_with_key_bytes(sealed: SealedSeal, key_bytes: bytes) -> bool:
+    """Verify using already-decoded key bytes.
+
+    Shared by the legacy single-key path and the keyring paths.
+    """
     body = _seal_body_to_dict(sealed)
     provided_signature = body.pop("signature")
     expected_mac = hmac.new(key_bytes, _canonical_bytes(body), hashlib.sha256).hexdigest()
-    # The signature field is "hmac-sha256:<hex>". Compare the hex portion only
-    # so that any tampering with the algorithm tag is also detected (the body
-    # hasn't changed but the signature field has — we must reject).
     if ":" not in provided_signature:
         return False
     _, _, provided_hex = provided_signature.partition(":")
