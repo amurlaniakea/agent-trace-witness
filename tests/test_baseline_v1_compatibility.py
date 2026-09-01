@@ -95,3 +95,66 @@ class TestV1FixtureBaseline:
         assert recomputed == EXPECTED_SIGNATURE_HEX
         _, _, provided_hex = provided.partition(":")
         assert hmac.compare_digest(provided_hex, recomputed)
+
+
+class TestKeyIdOutOfCanonicalBody:
+    """D6/D7: key_id lives OUTSIDE the HMAC-signed body.
+
+    Feature 004 T044-0c. If someone adds key_id to _canonical_bytes
+    (e.g. by including it in _seal_body_to_dict), the HMAC of any
+    seal will change — this test would fail because a v1 seal signed
+    with key_id=None would no longer match its signature when
+    key_id is later set to anything else, and the v1 fixture's
+    computed MAC would no longer match ``dc91ea...`` once key_id
+    entered the canonical body.
+    """
+
+    def test_key_id_does_not_change_hmac(self, fixture_seal: SealedSeal) -> None:
+        """Two SealedSeals with identical body but different key_id values
+        must produce the same HMAC.
+
+        The test computes hmac.new(key, canonical_body, sha256) over the
+        body of fixture_seal once with key_id=None and once with
+        key_id set to a non-None string. If key_id entered the
+        canonical body, the two MACs would differ.
+        """
+        key_bytes = bytes.fromhex(FIXTURE_KEY)
+        # Body without signature (HMAC is over body, not over sig).
+        body_bytes = _canonical_bytes(
+            {k: v for k, v in _seal_body_to_dict(fixture_seal).items() if k != "signature"}
+        )
+        # The HMAC over the body should be exactly the one stored in
+        # fixture_seal.signature, regardless of key_id (which is metadata
+        # and lives outside the body).
+        mac_from_body = hmac.new(key_bytes, body_bytes, "sha256").hexdigest()
+        assert mac_from_body == EXPECTED_SIGNATURE_HEX
+
+        # Now: if we set key_id to ANYTHING on the same seal and re-verify,
+        # the signature must still hold (D6: key_id does not affect HMAC).
+        for kid in (None, "", "2026-09-01T12:00:00Z", "x" * 256):
+            with_kid = dataclasses.replace(fixture_seal, key_id=kid)
+            assert verify_seal(with_kid, key=FIXTURE_KEY) is True, (
+                f"verify_seal rejected a seal with key_id={kid!r} — "
+                f"D6 violated (key_id should be post-signature metadata)"
+            )
+
+    def test_canonical_bytes_unchanged_by_key_id_field(self, fixture_seal: SealedSeal) -> None:
+        """Direct check on _canonical_bytes: setting key_id on the
+        SealedSeal must not change the bytes that get hashed.
+
+        We take the body of the fixture (excluding signature, since
+        _canonical_bytes hashes body), and assert that adding key_id to
+        the SealedSeal (a metadata field that the seal function does not
+        pass to _canonical_bytes) does not change the body_bytes."""
+        body_bytes = _canonical_bytes(
+            {k: v for k, v in _seal_body_to_dict(fixture_seal).items() if k != "signature"}
+        )
+        # The same body after replacing key_id on the SealedSeal.
+        with_kid = dataclasses.replace(fixture_seal, key_id="any")
+        body_bytes_with_kid = _canonical_bytes(
+            {k: v for k, v in _seal_body_to_dict(with_kid).items() if k != "signature"}
+        )
+        assert body_bytes == body_bytes_with_kid, (
+            "_canonical_bytes body changed when key_id was set on the SealedSeal — "
+            "key_id must not be in the HMAC body (D6)"
+        )

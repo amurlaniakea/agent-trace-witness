@@ -139,6 +139,15 @@ class SealedSeal:
     modification of those fields invalidates the signature; modification of
     the signature field alone also invalidates (because the signature
     won't match the body anymore).
+
+    ``key_id`` is OPTIONAL metadata (Q1 / feature 004). It is NOT part
+    of the canonical body used for HMAC computation — it is a
+    *selector* for the verifier (D6/D7 of plan.md): if present, the
+    verifier uses the exact entry in the keyring; if absent (v1
+    seals, fixtures from 001-003), the verifier tries every non-revoked
+    key. The test ``test_key_id_is_not_in_canonical_bytes`` enforces
+    this invariant — the HMAC is identical whether ``key_id`` is set
+    or None.
     """
 
     system_prompt_sha256: str
@@ -146,6 +155,7 @@ class SealedSeal:
     created_at: str
     witness_id: str
     signature: str  # "hmac-sha256:<hex>"
+    key_id: str | None = None
 
 
 @dataclass(frozen=True)
