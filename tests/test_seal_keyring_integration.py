@@ -11,6 +11,8 @@ the HMAC body) is enforced here too.
 
 from __future__ import annotations
 
+import pytest
+
 from agent_trace_witness.keyring import KeyEntry, Keyring
 from agent_trace_witness.seal import (
     AgentSpec,
@@ -233,3 +235,75 @@ class TestVerifySealWithKeyring:
             )
         )
         assert verify_seal(sealed, keyring=kr) is True
+
+
+class TestSignSealKeyringErrorTranslation:
+    """Empty keyring must raise a typed WitnessKeyError, not AssertionError.
+
+    Pre-fix: sign_seal(keyring=empty_keyring) leaked an AssertionError
+    from keyring.active_key() — the operator got a stack trace pointing
+    at internal assertions rather than a clear 'run witness keygen first'
+    message. Post-fix: WitnessKeyError is raised with the right hint.
+    The exception class is part of the public surface (consumers
+    distinguish WitnessKeyError from WitnessSealError) so this test
+    pins both the type and the message content.
+    """
+
+    def test_empty_keyring_raises_witness_key_error(self) -> None:
+        from agent_trace_witness.exceptions import WitnessKeyError
+
+        seal = _make_unsigned_seal()
+        kr = Keyring()  # empty
+        with pytest.raises(WitnessKeyError) as excinfo:
+            sign_seal(seal, keyring=kr)
+        # The error message must mention the user-actionable fix.
+        assert "witness keygen" in str(excinfo.value).lower()
+
+    def test_keyring_with_only_revoked_raises_witness_key_error(self) -> None:
+        """A keyring whose only entries are revoked has no active key —
+        same translation must apply (the AssertionError from
+        active_key() must become WitnessKeyError)."""
+        from agent_trace_witness.exceptions import WitnessKeyError
+
+        seal = _make_unsigned_seal()
+        kr = Keyring()
+        kr.add_key(
+            KeyEntry(
+                key_id="only-key",
+                algorithm="hmac",
+                secret="0" * 64,
+                created_at="2026-09-01T00:00:00Z",
+                active=True,
+            )
+        )
+        kr.revoke_key("only-key")
+        with pytest.raises(WitnessKeyError) as excinfo:
+            sign_seal(seal, keyring=kr)
+        assert "no active key" in str(excinfo.value).lower()
+
+    def test_keyring_with_no_active_raises_typed_error(self) -> None:
+        """Same error translation for the >1 active case: the contract
+        is 'at most 1 active non-revoked key', violated here with 2."""
+        from agent_trace_witness.exceptions import WitnessKeyError
+
+        seal = _make_unsigned_seal()
+        e1 = KeyEntry(
+            key_id="k1",
+            algorithm="hmac",
+            secret="0" * 64,
+            created_at="2026-09-01T00:00:00Z",
+            active=True,
+        )
+        e2 = KeyEntry(
+            key_id="k2",
+            algorithm="hmac",
+            secret="0" * 64,
+            created_at="2026-09-01T00:00:01Z",
+            active=True,
+        )
+        kr = Keyring(keys=[e1, e2])
+        with pytest.raises(WitnessKeyError) as excinfo:
+            sign_seal(seal, keyring=kr)
+        # The >1 case is internal data corruption, but the message
+        # still must be typed (no AssertionError leak).
+        assert excinfo.type is WitnessKeyError

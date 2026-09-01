@@ -326,7 +326,19 @@ def sign_seal(
         raise WitnessSealError(f"seal must be a Seal, got {type(seal).__name__}")
     key_id: str | None = None
     if keyring is not None:
-        active = keyring.active_key()
+        try:
+            active = keyring.active_key()
+        except AssertionError as exc:
+            # Translate the AssertionError from Keyring.active_key (which
+            # signals "0 or >1 active non-revoked keys") into a typed
+            # WitnessKeyError so callers see a consistent exception
+            # hierarchy. The default case (empty keyring) is the
+            # operator's most likely cause — they forgot to run
+            # `witness keygen` first.
+            raise WitnessKeyError(
+                f"keyring has no active key ({exc}); run "
+                f"`witness keygen` to generate one, or pass key=..."
+            ) from exc
         key = active.secret
         key_id = active.key_id
     key_bytes = _read_key(key)
