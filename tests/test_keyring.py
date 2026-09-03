@@ -59,6 +59,55 @@ class TestKeyringPersistence:
         kr.save()
         assert not (tmp_path / "keys.json.tmp").exists()
 
+    def test_save_applies_0600_on_posix(self, tmp_path: Path) -> None:
+        """004-hygiene: save() restricts the file mode to 0600 on POSIX.
+
+        Auditor's finding (2026-09): KeyEntry.to_public() docstring
+        promised 'en disco el archivo debe estar en 0600', but
+        keyring.py never applied chmod. Without it, the JSON
+        containing HMAC secrets is world-readable.
+
+        Test is non-vacío: if someone removes the os.chmod call from
+        save(), this test fails (mode != 0o600) on POSIX systems.
+        On non-POSIX (Windows) the test is skipped — the chmod bit
+        is meaningless there.
+        """
+        import os
+        import stat
+
+        if os.name != "posix":
+            pytest.skip("chmod semantics not meaningful on non-POSIX")
+
+        path = tmp_path / "keys.json"
+        kr = Keyring(path=str(path))
+        kr.add_key(keygen())
+        kr.save()
+
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode == 0o600, (
+            f"keys.json has mode {oct(mode)}; expected 0o600 (owner "
+            f"read/write only) to protect HMAC secrets from other "
+            f"users on the system"
+        )
+
+    def test_save_also_restricts_existing_file(self, tmp_path: Path) -> None:
+        """004-hygiene: re-saving over an existing file tightens its
+        mode (operator may have inherited a 0644 file from a prior
+        version of 004 that didn't chmod)."""
+        import os
+        import stat
+
+        if os.name != "posix":
+            pytest.skip("chmod semantics not meaningful on non-POSIX")
+
+        path = tmp_path / "keys.json"
+        path.write_text("{}", encoding="utf-8")
+        os.chmod(path, 0o644)  # simulate pre-fix state
+        kr = Keyring(path=str(path))
+        kr.add_key(keygen())
+        kr.save()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
 
 # ---------------------------------------------------------------------------
 # T041-1 / T041-4: KeyEntry + keygen

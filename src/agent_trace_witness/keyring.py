@@ -148,6 +148,13 @@ class Keyring:
             encoding="utf-8",
         )
         os.replace(tmp, target)
+        # Restrict permissions on POSIX (the file contains HMAC secrets in
+        # clear). 0600 = owner read/write only. Best-effort: on Windows
+        # the mode bit is meaningless, so we skip silently. This honors
+        # the docstring of KeyEntry.to_public() (line ~92): "en disco el
+        # archivo debe estar en 0600".
+        if os.name == "posix":
+            os.chmod(target, 0o600)
 
     # -- accessors -----------------------------------------------------------
 
