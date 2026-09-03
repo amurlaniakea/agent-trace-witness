@@ -37,11 +37,14 @@ pip install -e .
 ## Quickstart — end-to-end (shell-chainable)
 
 ```bash
-# 1. Generate the HMAC key once (never commit it — see §Q1 below).
-#    Store it in your secret manager or env; tests use a fixed value
-#    via conftest.py, production reads ATW_WITNESS_KEY.
-python -c "import secrets; print(secrets.token_hex(32))"
-export ATW_WITNESS_KEY="<64-hex-chars>"
+# 1. Generate the HMAC key once with the witness CLI (recommended).
+#    Stores the key in ./keys.json (gitignored) with mode 0600.
+#    Skip this step if you prefer to set ATW_WITNESS_KEY manually.
+witness keygen -o keys.json
+
+#    Alternative (still supported, uses the legacy env-var path):
+#    python -c "import secrets; print(secrets.token_hex(32))"
+#    export ATW_WITNESS_KEY="<64-hex-chars>"
 
 # 2. Seal — signed readiness profile from an agent spec.
 cat > /tmp/agent_spec.json <<'JSON'
@@ -116,23 +119,54 @@ pytest --durations=0 -v # AC-7 determinism check
 - **No BekchiAI** (live observability + remote termination, arXiv:2608.26867), **no TraceGrant** (contract-governed prevention, arXiv:2608.21126), **no CTF-ABACUS solve profiles** (arXiv:2608.26237). Position is complementary: the witness produces the post-execution graph that those systems can consume. See `spec/constitution.md` C8.
 - **No Ed25519.** Signs with HMAC-SHA256. Distributed verification (multi-witness, public-key verification) is feature 004 (Q1).
 - **No server / REST API.** Library + CLI that the caller integrates. Server is 007.
-- **No HMAC key management.** Q1 is OPEN — documented in `spec/features/001-mvp/plan.md` §Q1 and `KNOWN_ISSUES.md` §2. Key generation, storage, rotation, and distributed verification are feature 004.
+- **HMAC key management** is implemented in feature 004 (merged `e1b8a15`, PR #1). Generate, store, and rotate keys with `witness keygen`, `witness rotate-key`, `witness revoke-key`, and `witness list-keys`. The default `keys.json` is created with `0600` permissions on POSIX. Distributed verification (multi-witness, public-key) is feature 005 (Ed25519).
 
 If something you expected is in the list above, it is not a bug — it is declared scope. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the living list.
 
-## Q1 — HMAC key management (OPEN)
+## Q1 — HMAC key management (IMPLEMENTED in 004)
 
-`ATW_WITNESS_KEY` is a 64-hex-char (32-byte) HMAC key the operator generates:
+`witness keygen` generates a 32-byte (64 hex chars) HMAC key, registers it
+in a `keys.json` (default `./keys.json`, gitignored), and locks the file
+to `0600` on POSIX. The key is selected for signing by the active entry
+in the keyring. Rotation and revocation are CLI subcommands.
 
 ```bash
-python -c "import secrets; print(secrets.token_hex(32))"
+# One-time per operator: generate and register the active key.
+witness keygen -o keys.json
+# -> generated key_id=2026-09-01T00:00:00.000001Z algorithm=hmac -> keys.json
+# -> keys.json mode: 0600 (POSIX; Windows has no chmod bit)
+
+# Rotate (old key becomes inactive, new one becomes active; history
+# preserved for v1 backward-compat verification).
+witness rotate-key -o keys.json
+
+# Revoke (excluded from verification; kept in the file for audit).
+witness revoke-key <key_id> -o keys.json
+
+# Inspect.
+witness list-keys -o keys.json
 ```
 
-- Never in the repo, never in versioned `.env`. Use a secret manager, orchestrator vault, or service env.
-- Rotation, multi-witness, and Ed25519 are feature 004.
-- Tests set the key via `tests/conftest.py` to `0`×64 so the suite runs without external secrets.
+**The legacy path still works**: `export ATW_WITNESS_KEY=<64-hex>` is
+honored by `witness seal/verify` when no `keyring=` argument is passed.
+This keeps 001/002/003 cassettes and pipelines operational without
+modification.
 
-Detail: `spec/features/001-mvp/plan.md` §Q1. Q1 does not close without explicit review by Sil.
+**Backward compatibility (D5–D7 of plan.md)**: a `SealedSeal` written
+before 004 (no `key_id` field) verifies correctly via `verify_seal(
+sealed, keyring=kr)` — the verifier tries every non-revoked key in
+the keyring until one matches. The 001 fixture
+`tests/fixtures/seal_without_damaging_tool.json` (signature
+`dc91ea...`) was used as the regression test target during 004
+development and continues to verify.
+
+**Ed25519 / multi-witness distributed verification is NOT in 004.**
+HMAC is symmetric, so M2 (threshold quorum with independent verifiers)
+is structurally impossible with HMAC. Ed25519 enables M1+M2+M3
+whereas HMAC only enables M1+M3. Ed25519 is feature 005.
+
+Detail: `spec/features/004-q1-key-management/{spec,plan,tasks}.md`
+in the Obsidian vault (not in this repo).
 
 ## License
 

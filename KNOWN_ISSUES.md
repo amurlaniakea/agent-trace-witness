@@ -27,22 +27,51 @@ effects como "no captured". Desde 002 esa limitación queda cerrada para
 biblioteca y CLI; eBPF/kernel tracing sigue fuera de alcance (biblioteca,
 no syscall SO).
 
-## §2 — Q1 (gestión de clave HMAC) ABIERTA
+## §2 — Q1 (gestión de clave HMAC) CERRADA en 004
 
-La gestión de la clave HMAC en runtime NO está resuelta en el MVP:
+La gestión de la clave HMAC en runtime quedó resuelta en feature 004
+(merged `e1b8a15`, PR #1). El estado histórico de esta sección se
+preserva abajo como trazabilidad; para el estado actual, ver
+`README.md` §Q1 y la nueva `## §10 — Cerradas en 004` (más abajo).
 
-- Quién genera la clave: el operador (comando sugerido en README:
-  `python -c "import secrets; print(secrets.token_hex(32))"`).
-- Dónde vive: NO en el repo, NO en `.env` versionado. Opciones razonables:
-  secret manager del SO, vault del orquestador, variable de entorno del
-  servicio.
-- Rotación: NO implementada. Cabe en feature 004 "key management".
-- Verificación distribuida (multi-witness): NO soportada. HMAC con clave
-  compartida no escala a múltiples verificadores independientes; Ed25519
-  cabe en feature 004 si la demanda lo requiere.
+**Estado al cierre (2026-09-01):**
 
-Detalle completo en `spec/features/001-mvp/plan.md §Q1`. Q1 NO se cierra
-sin revisión explícita de Sil.
+- Quién genera la clave: `witness keygen` (CLI). Backend en
+  `src/agent_trace_witness/keyring.py` (`KeyEntry.from_generated()`,
+  entropía de `secrets.token_hex(32)`).
+- Dónde vive: `keys.json` (default `./keys.json`, gitignored,
+  modo `0600` en POSIX — ver `## §10` (b)).
+- Rotación: `witness rotate-key`. History preservada para
+  backward-compat con sellos v1 (sin `key_id`).
+- Verificación distribuida (multi-witness): M1 (rotación) y M3
+  (varios procesos witness) implementados con HMAC en 004. M2
+  (quorum con verificadores independientes) requiere Ed25519
+  (clave pública) — sale a 005.
+- Backward compat: sellos v1 (sin `key_id`) verifican via
+  `verify_seal(sealed, keyring=kr)` con try-all. Fixture
+  `tests/fixtures/seal_without_damaging_tool.json` (firma
+  `dc91ea...`) sigue verificando byte a byte.
+
+**Histórico (estado antes de 004, preservado para trazabilidad):**
+
+> La gestión de la clave HMAC en runtime NO está resuelta en el MVP:
+>
+> - Quién genera la clave: el operador (comando sugerido en README:
+>   `python -c "import secrets; print(secrets.token_hex(32))"`).
+> - Dónde vive: NO en el repo, NO en `.env` versionado. Opciones razonables:
+>   secret manager del SO, vault del orquestador, variable de entorno del
+>   servicio.
+> - Rotación: NO implementada. Cabe en feature 004 "key management".
+> - Verificación distribuida (multi-witness): NO soportada. HMAC con clave
+>   compartida no escala a múltiples verificadores independientes; Ed25519
+>   cabe en feature 004 si la demanda lo requiere.
+>
+> Detalle completo en `spec/features/001-mvp/plan.md §Q1`. Q1 NO se cierra
+> sin revisión explícita de Sil.
+
+Para más detalle de la implementación, ver
+`spec/features/004-q1-key-management/{spec,plan,tasks}.md` en el
+vault.
 
 ## §3 — Integración MCP real vía cassettes (002); live stdio pendiente (003+)
 
@@ -224,3 +253,93 @@ automatizada contra un servidor MCP real instalable (`npx`/`uvx`, sin
 ser dependencia de CI) es opcional y valiosa para dar confianza real,
 pero no bloqueante para AC-16. Si esa prueba manual se hace, se
 documenta en `tests/fixtures/cassettes/README.md`.
+
+## §10 — Cerradas en 004 (trazabilidad)
+
+Issues que estaban ABIERTOS antes de feature 004 y se cerraron con el
+merge de `e1b8a15` (PR #1). Listados aquí para que un auditor que
+lea el histórico del repo pueda reconstruir cuándo y cómo se
+cerraron. No son issues activos — sólo referencia.
+
+**(a) Rotación de claves HMAC.** Antes de 004, ninguna rotación; el
+operador cambiaba la key a mano. 004 implementa `witness rotate-key`
+con preservación de history (commit `5a04e4a` backend, `f2d39af`
+CLI). Atomicidad: una rotación fallida deja el keyring INALTERADO
+(bug no-atómico cazado en revisión de T042, fix en `c5991f0`).
+
+**(b) Permisos del archivo de claves.** El docstring de
+`KeyEntry.to_public()` prometía `0600` desde 004 original, pero
+`keyring.py` no aplicaba el chmod hasta el commit `d494241`
+(2026-09, fix/keyring-permissions-and-docs). El archivo se creaba
+con `0644` por defecto — world-readable, brecha entre lo
+documentado y lo implementado. El fix añadió `os.chmod(target,
+0o600)` gated por `os.name == "posix"` tras el `os.replace` de la
+escritura atómica, más 2 tests no-vacíos en `test_keyring.py`
+(caso feliz + migración de un `keys.json` heredado en `0644`).
+Auditado externamente: SHA `d494241272c1dd4ba5a98164e88ac0d520d24782`.
+
+## §11 — Issues activos fuera de scope de 004
+
+Estos issues se identificaron durante la auditoría post-004 y se
+dejan registrados para futura decisión. NO son bugs, son
+decisiones de scope que requieren input del operador.
+
+### §11 (a) — Cobertura de tests vs gate declarado
+
+`pyproject.toml` declara `fail_under = 80` en la config de
+`pytest-cov`, pero NO hay GitHub Actions que aplique ese gate. La
+cobertura real local medida con `pytest --cov=agent_trace_witness`
+en este entorno (2026-09-03) reporta **69.67%** (`164 passed, 1
+skipped`, con 1220 stmts totales y 370 sin cubrir). El auditor
+externo midió 66% en su entorno; la diferencia es de versión de
+`coverage` y selección de tests. El gap principal es `cli.py`
+(14%, 305 stmts / 262 miss) porque sus tests se ejecutan vía
+`subprocess.run` con `CliRunner` indirecto — la cobertura por
+import no captura la ejecución del proceso. `keyring.py` está en
+97% con los tests de 004 (los nuevos del chmod incluidos); el gap
+NO está en 004.
+
+**Acción propuesta (NO implementada):** añadir un workflow de
+GitHub Actions mínimo (`.github/workflows/ci.yml`) que corra
+`ruff check`, `ruff format --check`, y `pytest --cov` con
+`fail_under` relajado temporalmente al 70% (≈ 69.67% actual,
+redondeado hacia arriba para que CI no marque en falso) hasta
+que `cli.py` llegue a cobertura razonable. Subir el gate a 80% es
+un TODO que requiere tests de CLI adicionales.
+
+**Decisión pendiente:** scope de hardening de CI no es parte de
+004. Esperar al input de Sil sobre si este trabajo entra en 005,
+006, o un sprint dedicado.
+
+### §11 (b) — `KeyEntry` frozen + `object.__setattr__`
+
+`KeyEntry` está declarado `@dataclass(frozen=True)`, pero
+`Keyring.rotate_key` y `Keyring.revoke_key` lo mutan vía
+`object.__setattr__` (workaround explícito, comentado). Funciona y
+tiene tests, pero es chapucero frente a `dataclasses.replace`
+(idiomático) o frente a no declararlo `frozen` (más simple pero
+pierde la inmutabilidad lógica). La razón original fue evitar
+rebuildar todas las fields en cada rotación; revisitar es un
+refactor de ~30 LOC.
+
+**Decisión pendiente:** refactor no es bug. Esperar al input de
+Sil sobre si entra en 005, 006, o se queda así.
+
+## §12 — Próxima auditoría pendiente
+
+El reporte del auditor independiente que cerró 004 también incluyó
+una nota sobre el autor del merge commit `e1b8a15`:
+`name=Fenix email=amurlaniakea@gmail.com`. El auditor aplicó la
+regla de MEMORY.md (identidad-por-canal) y pidió confirmación
+directa. Confirmado por el operador: "Fenix" es el alias de su
+blog personal en dev.to, no una identidad de terceros. La
+configuración local de `user.name = Fenix` quedó activa en el
+entorno desde el que se ejecutó `gh pr merge --squash`, y GitHub
+usó esa identidad para el campo `author` del commit mergeado
+(el campo `committer` muestra `GitHub <noreply@github.com>`,
+firma estándar de squash-m vía la API de GitHub).
+
+**Cierre:** no hay reescritura del commit. No se considera un
+issue de seguridad, fue una verificación de identidad que resolvió
+en benigno. Documentado aquí para que el siguiente auditor no
+re-abra el mismo hilo.
